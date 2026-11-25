@@ -1,0 +1,166 @@
+import { Weight_add, Weight_build, Weight_lt } from "../models/weight";
+import { Rm1Formula_fromSettings } from "../models/rm1Formula";
+import { ISettings, IWeight } from "../types";
+import type { ILiftographFoldContext } from "./liftographFold";
+import {
+  LiftographMeasures_entryVolume,
+  LiftographMeasures_setE1rm,
+  LiftographMeasures_setWeight,
+  LiftographMeasures_workoutDuration,
+} from "./liftographMeasures";
+import { ILiftographRow, ILiftographSource } from "./liftographRows";
+import type { Tree } from "@lezer/common";
+import { parser as liftoscriptParser } from "../liftoscript";
+import { LiftographScriptSyntax_hasError, LiftographScriptSyntax_signature } from "./liftographScriptSyntax";
+
+export type ILiftographPresetName =
+  | "maxWeight"
+  | "e1rm"
+  | "volume"
+  | "maxReps"
+  | "muscleSets"
+  | "muscleVolume"
+  | "duration"
+  | "value";
+
+export interface ILiftographPreset {
+  name: ILiftographPresetName;
+  sources: ILiftographSource["type"][];
+  hasArg: boolean;
+  script: (arg?: string) => string;
+  evaluate: (row: ILiftographRow, context: ILiftographFoldContext, arg?: string) => number | IWeight | undefined;
+}
+
+function maxWeight(weights: (IWeight | undefined)[]): IWeight | undefined {
+  let best: IWeight | undefined;
+  for (const weight of weights) {
+    if (weight != null && (best == null || Weight_lt(best, weight))) {
+      best = weight;
+    }
+  }
+  return best;
+}
+
+function workoutVolume(row: ILiftographRow, settings: ISettings): IWeight | undefined {
+  if (row.type === "exercise") {
+    return LiftographMeasures_entryVolume(row.entry, settings);
+  } else if (row.type === "workout") {
+    return row.record.entries.reduce(
+      (memo, entry) => Weight_add(memo, LiftographMeasures_entryVolume(entry, settings)),
+      Weight_build(0, settings.units)
+    );
+  }
+  return undefined;
+}
+
+export const liftographPresets: Record<ILiftographPresetName, ILiftographPreset> = {
+  maxWeight: {
+    name: "maxWeight",
+    sources: ["exercise"],
+    hasArg: false,
+    script: () => "point(max(completedWeights))",
+    evaluate: (row) =>
+      row.type === "exercise" ? maxWeight(row.entry.sets.map((set) => LiftographMeasures_setWeight(set))) : undefined,
+  },
+  e1rm: {
+    name: "e1rm",
+    sources: ["exercise"],
+    hasArg: false,
+    script: () => "point(max(e1rm))",
+    evaluate: (row, context) =>
+      row.type === "exercise"
+        ? maxWeight(
+            row.entry.sets.map((set) =>
+              LiftographMeasures_setE1rm(set, context.settings.units, Rm1Formula_fromSettings(context.settings))
+            )
+          )
+        : undefined,
+  },
+  volume: {
+    name: "volume",
+    sources: ["exercise", "workout"],
+    hasArg: false,
+    script: () => "point(volume)",
+    evaluate: (row, context) => workoutVolume(row, context.settings),
+  },
+  maxReps: {
+    name: "maxReps",
+    sources: ["exercise"],
+    hasArg: false,
+    script: () => "point(max(completedReps))",
+    evaluate: (row) => {
+      if (row.type !== "exercise") {
+        return undefined;
+      }
+      const reps = row.entry.sets.map((set) => set.completedReps).filter((r): r is number => r != null);
+      return reps.length === 0 ? undefined : Math.max(...reps);
+    },
+  },
+  muscleSets: {
+    name: "muscleSets",
+    sources: ["workout"],
+    hasArg: true,
+    script: (arg) => `point(muscleSets("${arg ?? ""}"))`,
+    evaluate: (row, context, arg) => {
+      if (row.type !== "workout" || arg == null) {
+        return undefined;
+      }
+      const groups: Partial<Record<string, { sets: number }>> = context.muscleGroups(row.record);
+      return groups[arg]?.sets ?? 0;
+    },
+  },
+  muscleVolume: {
+    name: "muscleVolume",
+    sources: ["workout"],
+    hasArg: true,
+    script: (arg) => `point(muscleVolume("${arg ?? ""}"))`,
+    evaluate: (row, context, arg) => {
+      if (row.type !== "workout" || arg == null) {
+        return undefined;
+      }
+      const groups: Partial<Record<string, { volume: IWeight }>> = context.muscleGroups(row.record);
+      return groups[arg]?.volume ?? Weight_build(0, context.settings.units);
+    },
+  },
+  duration: {
+    name: "duration",
+    sources: ["workout"],
+    hasArg: false,
+    script: () => "point(duration)",
+    evaluate: (row) => (row.type === "workout" ? LiftographMeasures_workoutDuration(row.record) : undefined),
+  },
+  value: {
+    name: "value",
+    sources: ["stats"],
+    hasArg: false,
+    script: () => "point(value)",
+    evaluate: (row) => (row.type === "stats" ? row.value : undefined),
+  },
+};
+
+export function LiftographPresets_isName(name: string): name is ILiftographPresetName {
+  return Object.prototype.hasOwnProperty.call(liftographPresets, name);
+}
+
+export function LiftographPresets_fromScript(
+  tree: Tree,
+  script: string,
+  sourceType: ILiftographSource["type"]
+): { preset: ILiftographPresetName; arg?: string } | undefined {
+  if (LiftographScriptSyntax_hasError(tree)) {
+    return undefined;
+  }
+  for (const preset of Object.values(liftographPresets)) {
+    if (preset.sources.indexOf(sourceType) === -1) {
+      continue;
+    }
+    const argOf = preset.hasArg ? preset.name : undefined;
+    const presetScript = preset.script(preset.hasArg ? "arg" : undefined);
+    const expected = LiftographScriptSyntax_signature(liftoscriptParser.parse(presetScript), presetScript, argOf);
+    const actual = LiftographScriptSyntax_signature(tree, script, argOf);
+    if (actual.shape === expected.shape) {
+      return actual.arg != null ? { preset: preset.name, arg: actual.arg } : { preset: preset.name };
+    }
+  }
+  return undefined;
+}

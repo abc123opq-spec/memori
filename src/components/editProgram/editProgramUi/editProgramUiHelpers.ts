@@ -1,0 +1,345 @@
+import { PP_iterate2 } from "../../../models/pp";
+import {
+  IProgramRewriteResult,
+  ProgramRewrite_instances,
+  ProgramRewrite_repeatWeeks,
+  ProgramRewrite_validate,
+} from "../../../models/programRewrite";
+import { Dialog_alert } from "../../../utils/dialog";
+import { Translate_text } from "../../../i18n/translate";
+import {
+  IPlannerProgramExercise,
+  IPlannerProgramExerciseEvaluatedSet,
+  IPlannerState,
+  IPlannerUi,
+} from "../../../pages/planner/models/types";
+import { PlannerKey_fromFullName } from "../../../pages/planner/plannerKey";
+import { PlannerStructure_normalizeOrdersInDay } from "../../../pages/planner/models/plannerStructure";
+import {
+  IPlannerProgram,
+  ISettings,
+  IDayData,
+  IExerciseType,
+  IDaySetData,
+  IPlannerProgramDay,
+  IShortDayData,
+} from "../../../types";
+import { ObjectUtils_clone } from "../../../utils/object";
+import { IExercise, Exercise_fullName, Exercise_get } from "../../../models/exercise";
+import {
+  IEvaluatedProgram,
+  Program_evaluateCachedPlanner,
+  Program_create,
+  Program_getFirstProgramExercise,
+} from "../../../models/program";
+import { ProgramToPlanner } from "../../../models/programToPlanner";
+import { ILensDispatch } from "../../../utils/useLensReducer";
+import { lb } from "lens-shmens";
+import { UidFactory_generateUid } from "../../../utils/generator";
+
+function plannerOrAlert(result: IProgramRewriteResult, oldPlanner: IPlannerProgram): IPlannerProgram {
+  if ("error" in result) {
+    Dialog_alert(result.error.message);
+    return oldPlanner;
+  }
+  return result.planner;
+}
+
+export function EditProgramUiHelpers_validate(
+  shouldValidate: boolean,
+  oldPlanner: IPlannerProgram,
+  newPlanner: IPlannerProgram,
+  settings: ISettings
+): IPlannerProgram {
+  if (!shouldValidate) {
+    return newPlanner;
+  }
+  const error = ProgramRewrite_validate(newPlanner, settings);
+  return plannerOrAlert(error != null ? { error } : { planner: newPlanner }, oldPlanner);
+}
+
+export function EditProgramUiHelpers_onDaysChange(
+  plannerDispatch: ILensDispatch<IPlannerState>,
+  ui: IPlannerUi,
+  weekIndex: number,
+  days: IPlannerProgramDay[],
+  cb: (order: boolean[]) => void
+): void {
+  const lbUi = lb<IPlannerState>().p("ui");
+  const collapsedOrder = days.map((d, i) => {
+    return ui.dayUi.collapsed.has(`${weekIndex}-${i}`);
+  });
+  cb(collapsedOrder);
+  plannerDispatch(
+    [
+      lbUi
+        .p("dayUi")
+        .p("collapsed")
+        .recordModify((collapsed) => {
+          const newCollapsed = new Set<string>(collapsed);
+          for (let i = 0; i < collapsedOrder.length; i++) {
+            if (collapsedOrder[i]) {
+              newCollapsed.add(`${weekIndex}-${i}`);
+            } else {
+              newCollapsed.delete(`${weekIndex}-${i}`);
+            }
+          }
+          return newCollapsed;
+        }),
+    ],
+    "Toggle week collapse state"
+  );
+}
+
+export function EditProgramUiHelpers_changeSets(
+  planner: IPlannerProgram,
+  key: string,
+  daySets: IDaySetData[],
+  settings: ISettings,
+  cb: (set: IPlannerProgramExerciseEvaluatedSet) => void
+): IPlannerProgram {
+  const result = ProgramRewrite_instances(planner, settings, (evaluated) => {
+    PP_iterate2(evaluated.weeks, (e, weekIndex, dayInWeekIndex) => {
+      if (e.key !== key) {
+        return;
+      }
+      for (const daySet of daySets) {
+        if (daySet.week === weekIndex + 1 && daySet.dayInWeek === dayInWeekIndex + 1) {
+          for (let setVariationIndex = 0; setVariationIndex < e.evaluatedSetVariations.length; setVariationIndex++) {
+            if (daySet.setVariation === setVariationIndex + 1) {
+              const sets = e.evaluatedSetVariations[setVariationIndex].sets;
+              for (let setIndex = 0; setIndex < sets.length; setIndex++) {
+                if (daySet.set === setIndex + 1) {
+                  cb(sets[setIndex]);
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+  return plannerOrAlert(result, planner);
+}
+
+export function EditProgramUiHelpers_changeCurrentInstance3(
+  planner: IPlannerProgram,
+  fullName: string,
+  dayData: IShortDayData,
+  isRepeat: boolean,
+  settings: ISettings,
+  shouldValidate: boolean,
+  cb: (exercise: IPlannerProgramExercise) => void
+): IPlannerProgram {
+  const result = ProgramRewrite_instances(
+    planner,
+    settings,
+    (evaluated) => {
+      const weeks = EditProgramUiHelpers_getWeeks2(evaluated, dayData, fullName, isRepeat);
+      for (const week of weeks) {
+        PP_iterate2(evaluated.weeks, (e, weekIndex, dayInWeekIndex) => {
+          const current = week === weekIndex + 1 && dayData.dayInWeek === dayInWeekIndex + 1 && e.fullName === fullName;
+          if (current) {
+            cb(e);
+          }
+        });
+      }
+    },
+    { validate: shouldValidate }
+  );
+  return plannerOrAlert(result, planner);
+}
+
+export function EditProgramUiHelpers_getWeeks2(
+  evaluatedProgram: IEvaluatedProgram,
+  dayData: IShortDayData,
+  fullName: string,
+  ignoreRepeats: boolean = false
+): number[] {
+  return ProgramRewrite_repeatWeeks(evaluatedProgram, dayData, fullName, ignoreRepeats);
+}
+
+// A label the copy can carry without landing on top of something already in the day. The caller's is
+// kept when it already distinguishes them — which is what a typed label is for — and otherwise three
+// random letters, the same way a rename picks a fresh suffix when the name it wanted is taken.
+function uniqueDuplicateLabel(
+  evaluatedProgram: IEvaluatedProgram,
+  dayData: Required<IDayData>,
+  newExerciseType: IExerciseType | string,
+  label: string | undefined,
+  settings: ISettings
+): string | undefined {
+  const day = evaluatedProgram.weeks[dayData.week - 1]?.days[dayData.dayInWeek - 1];
+  const takenKeys = new Set((day?.exercises ?? []).map((e) => e.key));
+  const keyFor = (candidate: string | undefined): string => {
+    const candidateFullName =
+      typeof newExerciseType === "string"
+        ? `${candidate ? `${candidate}: ` : ""}${newExerciseType}`
+        : Exercise_fullName(Exercise_get(newExerciseType, settings.exercises), settings, candidate);
+    return PlannerKey_fromFullName(candidateFullName, settings.exercises);
+  };
+  if (!takenKeys.has(keyFor(label))) {
+    return label;
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = UidFactory_generateUid(3);
+    if (!takenKeys.has(keyFor(candidate))) {
+      return candidate;
+    }
+  }
+  return UidFactory_generateUid(3);
+}
+
+export function EditProgramUiHelpers_duplicateCurrentInstance(
+  planner: IPlannerProgram,
+  dayData: Required<IDayData>,
+  fullName: string,
+  label: string | undefined,
+  newExerciseType: IExerciseType | string,
+  settings: ISettings
+): IPlannerProgram {
+  const evaluatedProgram = ObjectUtils_clone(
+    Program_evaluateCachedPlanner({ ...Program_create("Temp"), planner }, settings)
+  );
+  const weeks = EditProgramUiHelpers_getWeeks2(evaluatedProgram, dayData, fullName);
+  // A copy that keeps its source's label isn't a copy: the label is part of the key, so both lines
+  // would resolve to one exercise and the duplicate would silently merge into the original. When the
+  // caller hasn't supplied a label that distinguishes them, one gets minted — three random letters,
+  // the same way a rename picks a fresh suffix (plannerProgram.ts :143).
+  //
+  // Resolved once rather than per week, because the copy has to be the *same* exercise in every week
+  // this repeats into; a label per week would scatter it into one exercise per week.
+  const resolvedLabel = uniqueDuplicateLabel(evaluatedProgram, dayData, newExerciseType, label, settings);
+
+  const add = [];
+  for (const week of weeks) {
+    const targetDay = evaluatedProgram.weeks[week - 1]?.days[dayData.dayInWeek - 1];
+
+    let newFullName: string | undefined;
+    const index = targetDay.exercises.findIndex((e) => e.fullName === fullName);
+    const previousExercise = targetDay.exercises[index];
+    if (index !== -1 && previousExercise) {
+      let exercise: IExercise | undefined;
+      if (typeof newExerciseType === "string") {
+        newFullName = `${resolvedLabel ? `${resolvedLabel}: ` : ""}${newExerciseType}`;
+      } else {
+        exercise = Exercise_get(newExerciseType, settings.exercises);
+        newFullName = Exercise_fullName(exercise, settings, resolvedLabel);
+      }
+      const newExercise: IPlannerProgramExercise = {
+        ...ObjectUtils_clone(previousExercise),
+        label: resolvedLabel ?? previousExercise.label,
+        fullName: newFullName,
+        shortName: newFullName,
+        notused: typeof newExerciseType === "string" ? true : previousExercise.notused,
+        key: PlannerKey_fromFullName(newFullName, settings.exercises),
+        exerciseType: typeof newExerciseType === "string" ? undefined : newExerciseType,
+        name: exercise ? exercise.name : typeof newExerciseType === "string" ? newExerciseType : "",
+      };
+      targetDay.exercises.splice(index + 1, 0, newExercise);
+    }
+    if (newFullName != null && index !== -1) {
+      add.push({ dayData: { ...dayData, week }, fullName: newFullName, index: index + 1 });
+    }
+  }
+  if (add.length > 0) {
+    return new ProgramToPlanner(evaluatedProgram, settings).convertToPlanner({ add });
+  } else {
+    return planner;
+  }
+}
+
+export function EditProgramUiHelpers_deleteCurrentInstance(
+  planner: IPlannerProgram,
+  dayData: Required<IDayData>,
+  fullName: string,
+  settings: ISettings,
+  shouldValidate: boolean,
+  allowDeleteEverywhere: boolean
+): IPlannerProgram {
+  const evaluatedProgram = ObjectUtils_clone(
+    Program_evaluateCachedPlanner({ ...Program_create("Temp"), planner }, settings)
+  );
+  const weeks = EditProgramUiHelpers_getWeeks2(evaluatedProgram, dayData, fullName);
+
+  for (const week of weeks) {
+    const targetDay = evaluatedProgram.weeks[week - 1]?.days[dayData.dayInWeek - 1];
+
+    if (targetDay) {
+      const index = targetDay.exercises.findIndex((e) => e.fullName === fullName);
+      if (index !== -1) {
+        targetDay.exercises.splice(index, 1);
+      }
+    }
+  }
+
+  const newPlanner = EditProgramUiHelpers_validate(
+    shouldValidate,
+    planner,
+    new ProgramToPlanner(evaluatedProgram, settings).convertToPlanner(),
+    settings
+  );
+  if (!allowDeleteEverywhere) {
+    const newEvaluatedProgram = Program_evaluateCachedPlanner(
+      { ...Program_create("Temp"), planner: newPlanner },
+      settings
+    );
+    const firstExercise = Program_getFirstProgramExercise(newEvaluatedProgram, fullName);
+    if (!firstExercise) {
+      Dialog_alert(
+        Translate_text("You cannot delete this exercise from all days on the screen. Do it from the Program screen.")
+      );
+      return planner;
+    }
+  }
+  return newPlanner;
+}
+
+export function EditProgramUiHelpers_changeCurrentInstancePosition(
+  planner: IPlannerProgram,
+  dayData: Required<IDayData>,
+  fullName: string,
+  fromIndex: number,
+  toIndex: number,
+  settings: ISettings
+): IPlannerProgram {
+  const evaluatedProgram = ObjectUtils_clone(
+    Program_evaluateCachedPlanner({ ...Program_create("Temp"), planner }, settings)
+  );
+  const weeks = EditProgramUiHelpers_getWeeks2(evaluatedProgram, dayData, fullName);
+  const reorder = weeks.map((week) => ({ dayData: { ...dayData, week }, fromIndex, toIndex }));
+  // The reorder moves lines; a forced order outranks where a line sits, so without this the day
+  // would be rewritten and then drawn in exactly the order it was in before.
+  return PlannerStructure_normalizeOrdersInDay(
+    new ProgramToPlanner(evaluatedProgram, settings).convertToPlanner({ reorder }),
+    dayData.dayInWeek - 1,
+    settings
+  );
+}
+
+// Matches by key (the exercise's identity), not fullName. They diverge only for exercise variations:
+// the key ignores the `!` current marker, so two instances of the same ladder can share a key while their
+// fullNames differ. Matching all same-key instances is what "change all instances" means — a fullName match
+// would silently skip the divergent ones (splitting a ladder on add/remove/reorder). For single-name
+// exercises the two are equivalent, since the name can't diverge across instances.
+export function EditProgramUiHelpers_changeAllInstances(
+  planner: IPlannerProgram,
+  key: string,
+  settings: ISettings,
+  shouldValidate: boolean,
+  cb: (exercise: IPlannerProgramExercise) => void
+): IPlannerProgram {
+  const result = ProgramRewrite_instances(
+    planner,
+    settings,
+    (evaluated) => {
+      PP_iterate2(evaluated.weeks, (e) => {
+        if (e.key === key) {
+          cb(e);
+        }
+      });
+    },
+    { validate: shouldValidate }
+  );
+  return plannerOrAlert(result, planner);
+}

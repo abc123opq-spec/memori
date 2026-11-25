@@ -1,0 +1,313 @@
+import { JSX, useLayoutEffect, useRef, useState } from "react";
+import { StringUtils_colon } from "../../../utils/string";
+import { Platform, View } from "react-native";
+import { Text } from "../../../components/primitives/text";
+import { ISetResults, ISetSplit } from "../models/types";
+import { MuscleGroupOrder_sections } from "../../../models/muscleGroupOrder";
+import { PlannerWeekMuscles } from "./plannerWeekMuscles";
+import { LinkButton } from "../../../components/linkButton";
+import { Pressable } from "../../../components/primitives/pressable";
+import { IconMuscleSettings } from "../../../components/icons/iconMuscleSettings";
+import { Tailwind_semantic } from "../../../utils/tailwindConfig";
+import { IScreenMuscle, ISettings } from "../../../types";
+import { n } from "../../../utils/math";
+import { Translate_format } from "../../../i18n/translate";
+import { Muscle_getMuscleGroupName } from "../../../models/muscle";
+import { getNavigationService } from "../../../navigation/navUtils";
+import { CollectionUtils_sort } from "../../../utils/collection";
+import { TooltipPlacement_place } from "../../../utils/tooltipPlacement";
+import {
+  MuscleRangeDisplay_frequencyColor,
+  MuscleRangeDisplay_pctColor,
+  MuscleRangeDisplay_status,
+} from "../../../models/muscleRangeDisplay";
+import { IMusclePoints } from "../../../models/ungroupedMuscles";
+
+interface IPlannerWeekStatsProps {
+  setResults: ISetResults;
+  ungroupedMuscleSets: IMusclePoints;
+  colorize: boolean;
+  frequency: boolean;
+  settings: ISettings;
+  onEditSettings?: () => void;
+  editSettingsLabel?: string;
+}
+
+export function PlannerStats(props: IPlannerWeekStatsProps): JSX.Element {
+  const { setResults, settings, frequency, onEditSettings } = props;
+  return (
+    <View className="mb-2" data-testid="planner-stats" testID="planner-stats">
+      <Text className="text-sm">
+        <Text className="text-sm text-text-secondary">Total Sets:</Text> {setResults.total}
+      </Text>
+      <Text className="text-sm">
+        <Text className="text-sm text-text-secondary">Strength Sets: </Text>
+        <Text
+          className={`text-sm ${
+            props.colorize
+              ? MuscleRangeDisplay_pctColor(setResults.total, setResults.strength, settings.planner.strengthSetsPct)
+              : ""
+          }`}
+        >
+          {setResults.strength}
+          {setResults.total > 0 ? `, ${Math.round((setResults.strength * 100) / setResults.total)}%` : ""}
+        </Text>
+      </Text>
+      <Text className="mb-2 text-sm">
+        <Text className="text-sm text-text-secondary">Hypertrophy Sets: </Text>
+        <Text
+          className={`text-sm ${
+            props.colorize
+              ? MuscleRangeDisplay_pctColor(
+                  setResults.total,
+                  setResults.hypertrophy,
+                  settings.planner.hypertrophySetsPct
+                )
+              : ""
+          }`}
+        >
+          {setResults.hypertrophy}
+          {setResults.total > 0 ? `, ${Math.round((setResults.hypertrophy * 100) / setResults.total)}%` : ""}
+        </Text>
+      </Text>
+      <Text className="text-sm">
+        <StatLabel label="Upper Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.upper}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+      <Text className="text-sm">
+        <StatLabel label="Lower Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.lower}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+      <Text className="text-sm">
+        <StatLabel label="Core Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.core}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+      <Text className="text-sm">
+        <StatLabel label="Push Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.push}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+      <Text className="text-sm">
+        <StatLabel label="Pull Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.pull}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+      <Text className="mb-4 text-sm">
+        <StatLabel label="Legs Sets" />{" "}
+        <PlannerSetSplit
+          split={setResults.legs}
+          settings={settings}
+          shouldIncludeFrequency={frequency}
+          textSize="text-sm"
+        />
+      </Text>
+
+      <View className="w-32 mb-2">
+        <PlannerWeekMuscles
+          settings={props.settings}
+          data={setResults.muscleGroup}
+          ungroupedMuscleSets={props.ungroupedMuscleSets}
+        />
+      </View>
+
+      {onEditSettings && (
+        <View className="py-2">
+          {props.editSettingsLabel != null ? (
+            <Pressable
+              className="flex-row items-center gap-2 nm-planner-stats-edit-settings"
+              testID="planner-stats-edit-settings"
+              onPress={() => onEditSettings()}
+            >
+              <IconMuscleSettings color={Tailwind_semantic().text.link} />
+              <Text className="text-sm font-semibold text-text-link">{props.editSettingsLabel}</Text>
+            </Pressable>
+          ) : (
+            <LinkButton name="planner-stats-edit-settings" className="text-xs" onClick={() => onEditSettings()}>
+              Edit Weekly Muscle Range Settings
+            </LinkButton>
+          )}
+        </View>
+      )}
+
+      {MuscleGroupOrder_sections(setResults.muscleGroup, settings).map((rows, index) => (
+        <View key={rows[0].muscleGroup} className={index > 0 ? "mt-2" : ""}>
+          {rows.map(({ muscleGroup, split }) => (
+            <Text key={muscleGroup} className="text-sm">
+              <StatLabel label={Muscle_getMuscleGroupName(muscleGroup, props.settings)} />{" "}
+              <PlannerSetSplit
+                split={split}
+                settings={settings}
+                shouldIncludeFrequency={frequency}
+                muscle={props.colorize ? muscleGroup : undefined}
+                textSize="text-sm"
+              />
+            </Text>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function StatLabel(props: { label: string }): JSX.Element {
+  return <Text className="text-sm text-text-secondary">{props.label}{StringUtils_colon()}</Text>;
+}
+
+export function PlannerSetSplit(props: {
+  split: ISetSplit;
+  settings: ISettings;
+  shouldIncludeFrequency: boolean;
+  muscle?: IScreenMuscle;
+  textSize?: string;
+}): JSX.Element {
+  const { split, settings, shouldIncludeFrequency, muscle } = props;
+  const isDesktopWeb = Platform.OS === "web";
+  const [tooltipAnchor, setTooltipAnchor] = useState<DOMRect | undefined>(undefined);
+  const total = split.strength + split.hypertrophy;
+  const frequency = Object.keys(split.frequency).length;
+  const range = muscle ? settings.planner.weeklyRangeSets[muscle] : undefined;
+  const { colorClass: setColor, direction: setDirection } = MuscleRangeDisplay_status(total, range);
+  const frequencyColor = MuscleRangeDisplay_frequencyColor(
+    frequency,
+    muscle && range ? settings.planner.weeklyFrequency[muscle] : undefined
+  );
+
+  const handlePress =
+    !isDesktopWeb && split.exercises.length > 0
+      ? () =>
+          getNavigationService().then(({ navigateToModal }) =>
+            navigateToModal("setSplitModal", { exercises: split.exercises })
+          )
+      : undefined;
+
+  const textSize = props.textSize ?? "";
+
+  const totalNode = (
+    <Text className={`${textSize} ${setColor}`.trim()}>
+      {n(total, 0)}
+      {setDirection}
+    </Text>
+  );
+
+  const trailingNode = (
+    <>
+      {" "}
+      {total > 0 && (
+        <Text className={textSize}>
+          ({split.strength > 0 && <Text className={textSize}>{Translate_format("{n}s", { n: n(split.strength, 0) }, "weekInsight")}</Text>}
+          {split.strength > 0 && split.hypertrophy > 0 && ", "}
+          {split.hypertrophy > 0 && <Text className={textSize}>{Translate_format("{n}h", { n: n(split.hypertrophy, 0) }, "weekInsight")}</Text>})
+        </Text>
+      )}
+      {shouldIncludeFrequency && frequency > 0 && (
+        <Text className={`${textSize} ${frequencyColor}`.trim()}>, {Translate_format("{n}d", { n: Object.keys(split.frequency).length }, "weekInsight")}</Text>
+      )}
+    </>
+  );
+
+  if (isDesktopWeb) {
+    const hasExercises = split.exercises.length > 0;
+    return (
+      <Text className={textSize}>
+        <span
+          onMouseEnter={(e) => hasExercises && setTooltipAnchor(e.currentTarget.getBoundingClientRect())}
+          onMouseLeave={() => setTooltipAnchor(undefined)}
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setTooltipAnchor((anchor) => (anchor == null && hasExercises ? rect : undefined));
+          }}
+        >
+          {totalNode}
+          {tooltipAnchor != null && hasExercises && <PlannerStatsTooltip split={split} anchor={tooltipAnchor} />}
+        </span>
+        {trailingNode}
+      </Text>
+    );
+  }
+
+  return (
+    <Text onPress={handlePress} className={textSize}>
+      {totalNode}
+      {trailingNode}
+    </Text>
+  );
+}
+
+function PlannerStatsTooltip(props: { split: ISetSplit; anchor: DOMRect }): JSX.Element | null {
+  const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | undefined>(undefined);
+  const { anchor } = props;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el != null) {
+      const size = { width: el.offsetWidth, height: el.offsetHeight };
+      setPosition(
+        TooltipPlacement_place(anchor, size, {
+          width: document.documentElement.clientWidth,
+          height: document.documentElement.clientHeight,
+        })
+      );
+    }
+  }, [anchor]);
+  const exercises = CollectionUtils_sort(props.split.exercises, (a, b) => {
+    if ((a.isSynergist && b.isSynergist) || (!a.isSynergist && !b.isSynergist)) {
+      return a.exerciseName.localeCompare(b.exerciseName);
+    } else if (a.isSynergist) {
+      return 1;
+    } else {
+      return -1;
+    }
+  });
+  if (exercises.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 px-3 py-2 text-xs border bg-background-default border-border-neutral rounded-xl text-text-primary"
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        visibility: position == null ? "hidden" : "visible",
+      }}
+    >
+      <ul style={{ minWidth: "14rem" }}>
+        {exercises.map((exercise) => {
+          const totalSets = exercise.strengthSets + exercise.hypertrophySets;
+          return (
+            <li
+              key={exercise.exerciseName}
+              className={`font-bold ${exercise.isSynergist ? "text-text-secondary" : "text-text-primary"}`}
+            >
+              {exercise.exerciseName}: {n(totalSets)} ({n(exercise.strengthSets)}s, {n(exercise.hypertrophySets)}h)
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}

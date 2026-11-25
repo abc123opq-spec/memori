@@ -1,0 +1,245 @@
+import { Exercise_get, Exercise_getIsUnilateral, Exercise_fullName } from "../models/exercise";
+import { ExerciseImageUtils_url } from "../models/exerciseImage";
+import { Program_evaluate, Program_getProgramExercise } from "../models/program";
+import { ProgramExercise_hasUserPromptedVars } from "../models/programExercise";
+import { Progress_shouldShowAmrapModal, Progress_getNextEntry, Progress_getActiveSetTimer } from "../models/progress";
+import { Reps_setsStatus, Reps_findNextSetIndex, Reps_displayWeight } from "../models/set";
+import { Weight_realizeLoad, Weight_print } from "../models/weight";
+import { EquipmentLoadText_line } from "../models/equipmentLoadText";
+import { IPlannerProgramExercise } from "../pages/planner/models/types";
+import { IHistoryRecord, IProgram, ISettings, ISubscription } from "../types";
+import { TimedSet_toView } from "../models/timedSet";
+import { n } from "./math";
+import {
+  ILiveActivityEntry,
+  ILiveActivityGetReady,
+  ILiveActivitySetTimer,
+  ILiveActivityState,
+} from "./liveActivityState";
+import { INativeEffect } from "../models/nativeEffects";
+import { Subscriptions_hasSubscription } from "./subscriptions";
+import { HostConfig_resolveUrl } from "./hostConfig";
+
+export type {
+  ILiveActivitySet,
+  ILiveActivityEntry,
+  ILiveActivityRest,
+  ILiveActivitySetTimer,
+  ILiveActivityGetReady,
+  ILiveActivityState,
+} from "./liveActivityState";
+
+export function LiveActivityManager_getLiveActivityEntry(
+  progress: IHistoryRecord,
+  entryIndex: number | undefined,
+  setIndex: number | undefined,
+  programExercise: IPlannerProgramExercise | undefined,
+  settings: ISettings
+): ILiveActivityEntry | undefined {
+  if (entryIndex == null || setIndex == null) {
+    return undefined;
+  }
+  const entry = progress.entries[entryIndex];
+  if (!entry) {
+    return undefined;
+  }
+  const exercise = Exercise_get(entry.exercise, settings.exercises);
+  const allSets = [...entry.warmupSets, ...entry.sets];
+  const set = allSets[setIndex];
+  if (setIndex === -1 || !set) {
+    return undefined;
+  }
+  const isNextSetWarmup = setIndex < entry.warmupSets.length;
+  const weightForPlates = Reps_displayWeight(set);
+  const load = weightForPlates
+    ? Weight_realizeLoad(weightForPlates, settings, entry.exercise, isNextSetWarmup)
+    : undefined;
+  const loadText = EquipmentLoadText_line(load);
+  let exerciseImageUrl = ExerciseImageUtils_url(exercise, "small", settings);
+  if (exerciseImageUrl) {
+    exerciseImageUrl = HostConfig_resolveUrl(exerciseImageUrl);
+  }
+  const hasUserPromptedVars = !!(programExercise && ProgramExercise_hasUserPromptedVars(programExercise));
+  const canCompleteFromLiveActivity = !Progress_shouldShowAmrapModal(
+    entry,
+    isNextSetWarmup ? setIndex : setIndex - entry.warmupSets.length,
+    isNextSetWarmup ? "warmup" : "workout",
+    hasUserPromptedVars,
+    settings
+  );
+
+  const isUnilateral = Exercise_getIsUnilateral(entry.exercise, settings);
+  const currentReps =
+    isUnilateral && set.completedRepsLeft != null
+      ? `${set.completedRepsLeft}/${set.completedReps ?? set.reps ?? 0}`
+      : (set.completedReps ?? set.reps);
+  const currentWeight = Reps_displayWeight(set);
+  const state: ILiveActivityEntry = {
+    exerciseName: Exercise_fullName(exercise, settings),
+    exerciseImageUrl,
+    currentSet: setIndex + 1,
+    totalSets: allSets.length,
+    entryIndex: progress.entries.indexOf(entry),
+    setIndex,
+    completedSets: allSets.map((s, i) => ({
+      status: Reps_setsStatus([s]),
+      isWarmup: i < entry.warmupSets.length,
+    })),
+    targetReps: set.reps
+      ? `${set.minReps != null ? `${n(set.minReps)}-` : ""}${n(set.reps)}${set.isAmrap ? "+" : ""}`
+      : undefined,
+    targetWeight: set.weight ? `${Weight_print(set.weight)}${set.askWeight ? "+" : ""}` : undefined,
+    targetRPE: set.rpe != null ? `${n(set.rpe)}${set.logRpe ? "+" : ""}` : undefined,
+    targetTimer: set.timer != null ? set.timer.toString() : undefined,
+    plates: loadText !== "" ? loadText : "None",
+    currentWeight: currentWeight != null ? Weight_print(currentWeight) : undefined,
+    currentReps: currentReps != null ? currentReps.toString() : undefined,
+    isWarmup: isNextSetWarmup,
+    canCompleteFromLiveActivity,
+    isSetTimer: set.setTimer != null,
+  };
+  return state;
+}
+
+export function LiveActivityManager_updateProgressLiveActivity(
+  effects: INativeEffect[],
+  program: IProgram | undefined,
+  progress: IHistoryRecord,
+  settings: ISettings,
+  subscription: ISubscription | undefined,
+  entryIndex: number | undefined,
+  setIndex: number | undefined,
+  restTimer: number | undefined,
+  restTimerSince: number | undefined
+): void {
+  const entry = entryIndex != null ? progress.entries[entryIndex] : undefined;
+  const evaluatedProgram = program ? Program_evaluate(program, settings) : undefined;
+  const programExercise =
+    evaluatedProgram && entry
+      ? Program_getProgramExercise(progress.day, evaluatedProgram, entry.programExerciseId)
+      : undefined;
+  LiveActivityManager_updateLiveActivity(
+    effects,
+    progress,
+    entryIndex,
+    setIndex,
+    restTimer,
+    restTimerSince,
+    programExercise,
+    settings,
+    subscription
+  );
+}
+
+export function LiveActivityManager_updateLiveActivity(
+  effects: INativeEffect[],
+  progress: IHistoryRecord,
+  entryIndex: number | undefined,
+  setIndex: number | undefined,
+  restTimer: number | undefined,
+  restTimerSince: number | undefined,
+  programExercise: IPlannerProgramExercise | undefined,
+  settings: ISettings,
+  subscription?: ISubscription
+): void {
+  if (!subscription || !Subscriptions_hasSubscription(subscription)) {
+    return;
+  }
+  let liveActivityEntry = LiveActivityManager_getLiveActivityEntry(
+    progress,
+    entryIndex,
+    setIndex,
+    programExercise,
+    settings
+  );
+
+  // A running set timer takes over the live activity entirely: it shows the timed set's
+  // count-up clock and "complete the set" buttons instead of the next-exercise/rest layout.
+  const view = TimedSet_toView(progress, Progress_getActiveSetTimer(progress), settings);
+  let setTimerState: ILiveActivitySetTimer | undefined;
+  let getReadyState: ILiveActivityGetReady | undefined;
+  if (view != null) {
+    liveActivityEntry =
+      LiveActivityManager_getLiveActivityEntry(
+        progress,
+        view.entryIndex,
+        view.currentSet - 1,
+        programExercise,
+        settings
+      ) ?? liveActivityEntry;
+    if (view.stage === "work") {
+      setTimerState = {
+        setTimerSince: view.startedAt,
+        setTimer: view.targetSeconds,
+        isOverflow: view.isOverflow,
+        isCompleted: view.isCompleted,
+        entryIndex: view.entryIndex,
+        setIndex: view.setIndex,
+        restTimer: view.restSeconds,
+        phaseId: view.phaseId,
+        side: view.side,
+        recordedThisSide: view.recordedThisSide,
+      };
+    } else {
+      getReadyState = {
+        getReadySince: view.startedAt,
+        getReady: view.getReadySeconds,
+        entryIndex: view.entryIndex,
+        setIndex: view.setIndex,
+        setTimer: view.targetSeconds,
+        phaseId: view.phaseId,
+        side: view.side,
+      };
+    }
+  }
+
+  const restingSet =
+    progress.timerEntryIndex != null && progress.timerSetIndex != null
+      ? progress.entries[progress.timerEntryIndex]?.sets[progress.timerSetIndex]
+      : undefined;
+  const attributes: ILiveActivityState = {
+    workoutStartTimestamp: progress.startTime,
+    historyEntryState: liveActivityEntry,
+    setTimer: setTimerState,
+    getReady: getReadyState,
+    restTimer:
+      setTimerState == null && getReadyState == null && progress.timerSince != null && progress.timer != null
+        ? {
+            restTimerSince: restTimerSince ?? progress.timerSince,
+            restTimer: restTimer ?? progress.timer,
+            isAuto: !!restingSet?.auto,
+          }
+        : undefined,
+    ignoreDoNotDisturb: !!settings.ignoreDoNotDisturb,
+  };
+  effects.push({ type: "updateLiveActivity", state: attributes });
+}
+
+export function LiveActivityManager_updateLiveActivityForNextEntry(
+  effects: INativeEffect[],
+  progress: IHistoryRecord,
+  entryIndex: number,
+  mode: "workout" | "warmup",
+  programExercise: IPlannerProgramExercise | undefined,
+  settings: ISettings,
+  subscription?: ISubscription
+): void {
+  const currentEntry = progress.entries[entryIndex];
+  if (!currentEntry) {
+    return;
+  }
+  const nextEntry = Progress_getNextEntry(progress, currentEntry, mode, true);
+  const nextEntryIndex = nextEntry ? progress.entries.indexOf(nextEntry) : undefined;
+  const nextSetIndex = nextEntry ? Reps_findNextSetIndex(nextEntry) : undefined;
+  LiveActivityManager_updateLiveActivity(
+    effects,
+    progress,
+    nextEntryIndex,
+    nextSetIndex,
+    progress.timer,
+    progress.timerSince,
+    programExercise,
+    settings,
+    subscription
+  );
+}

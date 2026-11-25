@@ -1,0 +1,596 @@
+import {
+  IEditorToken,
+  IEditorTokenNumeric,
+  ILiftoEditorContext,
+  ILiftoEditorStyledRange,
+  ITextEdit,
+  LiftoEditorBrain_stepToken,
+} from "./liftoEditorBrain";
+import { ILiftoEditorPill } from "./liftoEditorActions";
+import { ILiftoEditorAdapter, ILiftoEditorEditPlan } from "./liftoEditorAdapter";
+import { PlannerNodeName } from "../../pages/planner/plannerExerciseStyles";
+import { Weight_build, Weight_convertTo, Weight_decrement, Weight_increment, Weight_round } from "../../models/weight";
+import { Exercise_onerm } from "../../models/exercise";
+import { MathUtils_roundFloat } from "../../utils/math";
+import { Tailwind_semantic } from "../../utils/tailwindConfig";
+import { IExerciseType, IPercentageUnit, ISettings, IUnit } from "../../types";
+
+// The structured-editing interaction state machine, pure by construction: every user
+// gesture is a `(session, input) -> { session, effects }` transition. Timestamps and
+// settings come in as arguments; effects DESCRIBE what the imperative shell (the
+// useLiftoEditorController hook) must do — text edits to send to the native editor,
+// keypad open/close — and are never performed here.
+
+export type ILiftoEditorMode = "structured" | "freeform";
+
+export interface IActiveNumber {
+  // Discriminant for future non-numeric keypad sessions (e.g. an IActiveText).
+  type: "number";
+  // The token as it was at activation; its start stays valid while the keypad is open.
+  token: IEditorToken;
+  // token.numeric, non-optional by construction (only numeric tokens activate).
+  numeric: IEditorTokenNumeric;
+  // Live span length — typing grows/shrinks the token in place.
+  length: number;
+  buffer: string;
+  suffix: string;
+  // The first digit after focusing replaces the value (type-to-replace), the rest append.
+  fresh: boolean;
+}
+
+export interface ILiftoEditorSession {
+  mode: ILiftoEditorMode;
+  text: string;
+  adapter: ILiftoEditorAdapter;
+  // The breadcrumb stack at the anchor; undefined = nothing focused.
+  context: ILiftoEditorContext | undefined;
+  // Active breadcrumb level; undefined = innermost.
+  focusLevel: number | undefined;
+  // The position "where the user is" — the re-query point for context after every edit.
+  anchor: number | undefined;
+  // The focused token: re-tap detection, ‹ › reference point, snap target for edits.
+  focusedToken: IEditorToken | undefined;
+  // Keypad editing session; non-null means the keypad is (or should be) open.
+  active: IActiveNumber | undefined;
+  lastTapTime: number;
+  lastTapIndex: number | undefined;
+  // Caret to place once the freeform render commits editable on the native side. The *live*
+  // freeform caret is deliberately not here: it's an echo of where the native text view put the
+  // cursor, not a decision this state machine makes, and the controller owns it.
+  pendingCaret: number | undefined;
+}
+
+export interface ILiftoEditorSessionEffects {
+  edits?: ITextEdit[];
+  keypad?: "open" | "close";
+}
+
+export interface ILiftoEditorSessionResult {
+  session: ILiftoEditorSession;
+  effects: ILiftoEditorSessionEffects;
+}
+
+export function LiftoEditorSession_create(text: string, adapter: ILiftoEditorAdapter): ILiftoEditorSession {
+  return {
+    mode: "structured",
+    text,
+    adapter,
+    context: undefined,
+    focusLevel: undefined,
+    anchor: undefined,
+    focusedToken: undefined,
+    active: undefined,
+    lastTapTime: 0,
+    lastTapIndex: undefined,
+    pendingCaret: undefined,
+  };
+}
+
+function parseToken(token: IEditorToken): IActiveNumber | undefined {
+  if (token.numeric == null) {
+    return undefined;
+  }
+  const match = token.text.match(/^([+-]?\d+(?:\.\d+)?)(.*)$/);
+  if (match == null) {
+    return undefined;
+  }
+  return {
+    type: "number",
+    token,
+    numeric: token.numeric,
+    length: token.text.length,
+    buffer: match[1],
+    suffix: match[2],
+    fresh: true,
+  };
+}
+
+function currentAnchor(session: ILiftoEditorSession): number | undefined {
+  const active = session.active;
+  return active != null ? Math.min(active.token.start + 1, active.token.start + active.length) : session.anchor;
+}
+
+function focusedLevelIndex(session: ILiftoEditorSession): number | undefined {
+  const ctx = session.context;
+  if (ctx == null || ctx.levels.length === 0) {
+    return undefined;
+  }
+  return session.focusLevel != null ? Math.min(session.focusLevel, ctx.levels.length - 1) : ctx.levels.length - 1;
+}
+
+// Applies the buffer to the active token's span: the edit to send, and the active with its
+// live length updated. Empty/lone-minus buffers render as "0" so the token stays parseable.
+function bufferEdit(active: IActiveNumber): { active: IActiveNumber; edit: ITextEdit } {
+  const tokenText = `${active.buffer === "" || active.buffer === "-" ? "0" : active.buffer}${active.suffix}`;
+  return {
+    active: { ...active, length: tokenText.length },
+    edit: { start: active.token.start, end: active.token.start + active.length, text: tokenText },
+  };
+}
+
+// Rebuild the keypad config after weight/percentage edits so addons that depend on the
+// value (plates readout, resolved weight) update; other kinds keep the keypad as-is.
+function bufferResult(session: ILiftoEditorSession, active: IActiveNumber): ILiftoEditorSessionResult {
+  const applied = bufferEdit(active);
+  const kind = applied.active.numeric.kind;
+  return {
+    session: { ...session, active: applied.active },
+    effects: { edits: [applied.edit], keypad: kind === "weight" || kind === "percentage" ? "open" : undefined },
+  };
+}
+
+function activateToken(session: ILiftoEditorSession, token: IEditorToken): ILiftoEditorSessionResult {
+  const parsed = parseToken(token);
+  if (parsed == null) {
+    return { session, effects: {} };
+  }
+  const anchor = Math.min(token.start + 1, token.end);
+  return {
+    session: {
+      ...session,
+      active: parsed,
+      anchor,
+      focusedToken: token,
+      context: session.adapter.contextAt(session.text, anchor),
+      focusLevel: undefined,
+    },
+    effects: { keypad: "open" },
+  };
+}
+
+export function LiftoEditorSession_tap(
+  session: ILiftoEditorSession,
+  index: number,
+  now: number
+): ILiftoEditorSessionResult {
+  // Double-tapping drills past structured mode into freeform, with the caret landing where
+  // the finger did — anywhere in the text, not just on a token (script bodies and
+  // punctuation produce no token at all). Two quick taps count as a double tap when they
+  // land on the same token, or — in token-free space — within a couple of characters;
+  // quick taps on two different tokens are fast navigation, not a double tap.
+  const adapter = session.adapter;
+  if (!adapter.canTap(session.text, index)) {
+    return { session, effects: {} };
+  }
+  const sinceLastTap = now - session.lastTapTime;
+  const tapped: ILiftoEditorSession = { ...session, lastTapTime: now, lastTapIndex: index };
+  const tokens = adapter.tokens(session.text);
+  const tokenAt = (i: number): IEditorToken | undefined => tokens.find((t) => i >= t.start && i <= t.end);
+  if (sinceLastTap < 300 && session.lastTapIndex != null && adapter.canFreeform(session.text)) {
+    const prevToken = tokenAt(session.lastTapIndex);
+    const thisToken = tokenAt(index);
+    const isSamePlace =
+      prevToken != null || thisToken != null ? prevToken === thisToken : Math.abs(index - session.lastTapIndex) <= 3;
+    if (isSamePlace) {
+      const result = LiftoEditorSession_switchToFreeform(tapped);
+      return { ...result, session: { ...result.session, pendingCaret: index } };
+    }
+  }
+  const focused = session.focusedToken;
+  if (focused != null && index >= focused.start && index <= focused.end && session.active != null) {
+    // Keypad open: the slow re-tap shouldn't reset the typed buffer. Otherwise fall
+    // through so a re-tap on a numeric token whose keypad was closed reopens it.
+    // Still reported as "open" even though it already is: the keypad host dismisses itself
+    // on any tap that didn't (re)open it, so staying silent here would close the keypad
+    // under the finger — and the layout shift that follows is what makes the second tap of
+    // a double tap miss, leaving no way to reach freeform from a focused number.
+    return { session: tapped, effects: { keypad: "open" } };
+  }
+  const numericToken = tokens.find((t) => t.numeric != null && index >= t.start && index <= t.end);
+  if (numericToken != null) {
+    return activateToken(tapped, numericToken);
+  }
+  return {
+    session: {
+      ...tapped,
+      active: undefined,
+      anchor: index,
+      focusedToken: tokens.find((t) => t.walkStop && index >= t.start && index <= t.end),
+      context: adapter.contextAt(session.text, index),
+      focusLevel: undefined,
+    },
+    effects: { keypad: "close" },
+  };
+}
+
+export function LiftoEditorSession_walkFocus(
+  session: ILiftoEditorSession,
+  direction: 1 | -1
+): ILiftoEditorSessionResult {
+  const tokens = session.adapter.tokens(session.text).filter((t) => t.walkStop);
+  if (tokens.length === 0) {
+    return { session, effects: {} };
+  }
+  // The reference point is the start of whatever is focused now; › goes to the first
+  // token strictly after it, ‹ strictly before. The focused token must win over the
+  // level — a level can start before its focused token (`warmup: none` focuses `none`
+  // but the property level starts at `warmup`), and using the level start would make
+  // › land on the current token again.
+  const levelIndex = focusedLevelIndex(session);
+  const current =
+    session.active?.token.start ??
+    session.focusedToken?.start ??
+    (session.context != null && levelIndex != null ? session.context.levels[levelIndex]?.start : undefined) ??
+    session.anchor ??
+    -1;
+  let next: IEditorToken | undefined;
+  if (direction > 0) {
+    next = tokens.find((t) => t.start > current) ?? tokens[0];
+  } else {
+    next = [...tokens].reverse().find((t) => t.start < current) ?? tokens[tokens.length - 1];
+  }
+  if (next.numeric != null) {
+    return activateToken(session, next);
+  }
+  const anchor = Math.min(next.start + 1, next.end);
+  return {
+    session: {
+      ...session,
+      active: undefined,
+      anchor,
+      focusedToken: next,
+      context: session.adapter.contextAt(session.text, anchor),
+      focusLevel: undefined,
+    },
+    effects: { keypad: "close" },
+  };
+}
+
+export function LiftoEditorSession_selectLevel(session: ILiftoEditorSession, index: number): ILiftoEditorSessionResult {
+  const ctx = session.context;
+  if (ctx == null || ctx.levels[index] == null) {
+    return { session, effects: {} };
+  }
+  // Zooming out past the number closes its keypad.
+  if (index < ctx.levels.length - 1 && session.active != null) {
+    return { session: { ...session, active: undefined, focusLevel: index }, effects: { keypad: "close" } };
+  }
+  return { session: { ...session, focusLevel: index }, effects: {} };
+}
+
+export function LiftoEditorSession_keypadInput(session: ILiftoEditorSession, key: string): ILiftoEditorSessionResult {
+  const active = session.active;
+  if (active == null) {
+    return { session, effects: {} };
+  }
+  let buffer = active.buffer;
+  if (key === "⌫") {
+    buffer = buffer.slice(0, -1);
+  } else if (key === ".") {
+    if (!buffer.includes(".")) {
+      buffer = buffer === "" ? "0." : `${buffer}.`;
+    }
+  } else if (/^\d$/.test(key)) {
+    buffer = active.fresh ? key : `${buffer}${key}`;
+  } else {
+    return { session, effects: {} };
+  }
+  return bufferResult(session, { ...active, buffer, fresh: false });
+}
+
+// Warmup percentages resolve against the first work set's weight rather than the 1RM, so
+// anything that reads a percentage as a load has to know it's looking at a warmup.
+export function LiftoEditorSession_isInWarmup(session: ILiftoEditorSession): boolean {
+  return session.context?.levels.some((l) => l.nodeName === PlannerNodeName.WarmupExerciseSets) ?? false;
+}
+
+export function LiftoEditorSession_setUnit(
+  session: ILiftoEditorSession,
+  unit: IUnit | IPercentageUnit,
+  settings: ISettings,
+  exerciseType: IExerciseType
+): ILiftoEditorSessionResult {
+  const active = session.active;
+  if (active == null) {
+    return { session, effects: {} };
+  }
+  const plus = active.suffix.endsWith("+") ? "+" : "";
+  const currentUnit = active.suffix.startsWith("%") ? "%" : active.suffix.startsWith("kg") ? "kg" : "lb";
+  if (unit === currentUnit) {
+    return { session, effects: {} };
+  }
+  const value = parseFloat(active.buffer === "" || active.buffer === "-" ? "0" : active.buffer);
+  const rm1 = Exercise_onerm(exerciseType, settings);
+  // Only a real lifted load has a percentage of the 1RM that means the same thing. A warmup
+  // percentage is of the first work set's weight; a function argument or a script number is
+  // an increment (`lp(5%)` adds 5%, it doesn't set 5% of the 1RM); and an exercise nobody has
+  // entered a 1RM for has no basis at all. In all three the unit still switches and the
+  // number stays as typed, the same as kg <-> lb does everywhere — a unit button that
+  // silently does nothing reads as a broken editor.
+  const convertsThroughRm1 = rm1.value > 0 && !active.numeric.inFunctionArgs && !LiftoEditorSession_isInWarmup(session);
+  let buffer = active.buffer;
+  let kind = active.numeric.kind;
+  // kg <-> lb keeps the raw value (matching the workout weight input); % conversions go
+  // through the exercise's 1RM so the token keeps referring to the same lifted load.
+  if (unit === "%") {
+    if (convertsThroughRm1) {
+      const weight = Weight_convertTo(Weight_build(value, currentUnit as IUnit), rm1.unit);
+      buffer = `${MathUtils_roundFloat((weight.value / rm1.value) * 100, 2)}`;
+    }
+    kind = "percentage";
+  } else if (currentUnit === "%") {
+    if (convertsThroughRm1) {
+      const weight = Weight_round(Weight_build((rm1.value * value) / 100, rm1.unit), settings, unit, exerciseType);
+      buffer = `${Weight_convertTo(weight, unit).value}`;
+    }
+    kind = "weight";
+  }
+  return bufferResult(session, {
+    ...active,
+    buffer,
+    suffix: `${unit}${plus}`,
+    numeric: { ...active.numeric, kind },
+  });
+}
+
+// The 1RM-calculator result: the keypad was closed for the modal, so always reopen it.
+export function LiftoEditorSession_setBufferValue(
+  session: ILiftoEditorSession,
+  value: number
+): ILiftoEditorSessionResult {
+  const active = session.active;
+  if (active == null) {
+    return { session, effects: {} };
+  }
+  const result = bufferResult(session, { ...active, buffer: `${value}`, fresh: false });
+  return { ...result, effects: { ...result.effects, keypad: "open" } };
+}
+
+export function LiftoEditorSession_step(
+  session: ILiftoEditorSession,
+  direction: 1 | -1,
+  settings: ISettings,
+  exerciseType: IExerciseType
+): ILiftoEditorSessionResult {
+  const active = session.active;
+  if (active == null) {
+    return { session, effects: {} };
+  }
+  // Set-section weights are real lifted loads — step through equipment settings (plates,
+  // fixed weights). Function-arg and script weights are increments and step a plain unit.
+  if (active.numeric.kind === "weight" && !active.numeric.inFunctionArgs) {
+    const value = parseFloat(active.buffer === "" || active.buffer === "-" ? "0" : active.buffer);
+    // startsWith: WeightWithPlus tokens carry the "+" in the suffix ("kg+").
+    const unit: IUnit = active.suffix.startsWith("kg") ? "kg" : "lb";
+    const stepFn = direction > 0 ? Weight_increment : Weight_decrement;
+    const next = stepFn(Weight_build(value, unit), settings, exerciseType);
+    return bufferResult(session, { ...active, buffer: `${next.value}`, suffix: next.unit });
+  }
+  const tokenText = `${active.buffer}${active.suffix}`;
+  const stepped = LiftoEditorBrain_stepToken(
+    {
+      start: active.token.start,
+      end: active.token.start + active.length,
+      text: tokenText,
+      walkStop: active.token.walkStop,
+      numeric: active.numeric,
+    },
+    direction
+  );
+  const match = stepped?.match(/^([+-]?\d+(?:\.\d+)?)(.*)$/);
+  if (match == null) {
+    return { session, effects: {} };
+  }
+  return bufferResult(session, { ...active, buffer: match[1], suffix: match[2] });
+}
+
+// Focus survives the edit (the rail should update in place, not vanish); anchor and
+// focused token shift by the length delta when the edit lands before them, and the
+// text-change transition recomputes the context at the shifted anchor. When the edit
+// overlaps them (replace-style pills transform the very token that's focused), they snap
+// to the replacement's extent so the context resolves inside the new text.
+export function LiftoEditorSession_applyPill(
+  session: ILiftoEditorSession,
+  pill: ILiftoEditorPill
+): ILiftoEditorSessionResult {
+  // Multi-span pills ("Make current") carry extraEdits; all spans are disjoint and in
+  // original-text coordinates. Walking them ascending keeps anchor/token bookkeeping in
+  // sync (each iteration shifts the edit into already-applied coordinates).
+  const edits = [{ start: pill.start, end: pill.end, text: pill.text }, ...(pill.extraEdits ?? [])].sort(
+    (a, b) => a.start - b.start
+  );
+  if (pill.focusAt != null || pill.freeformAt != null) {
+    return planResult(session, { edits, focusAt: pill.focusAt, freeformAt: pill.freeformAt });
+  }
+  let anchor = session.anchor;
+  let focusedToken = session.focusedToken;
+  let shift = 0;
+  for (const edit of edits) {
+    const start = edit.start + shift;
+    const end = edit.end + shift;
+    const delta = edit.text.length - (edit.end - edit.start);
+    if (anchor != null) {
+      if (end <= anchor) {
+        anchor = anchor + delta;
+      } else if (start < anchor) {
+        anchor = start;
+      }
+    }
+    if (focusedToken != null) {
+      if (end <= focusedToken.start) {
+        focusedToken = { ...focusedToken, start: focusedToken.start + delta, end: focusedToken.end + delta };
+      } else if (start < focusedToken.end && end > focusedToken.start) {
+        // The old token is gone; only the span matters after a snap (re-tap and walking
+        // re-derive tokens from fresh text), so a synthetic non-numeric token suffices.
+        focusedToken = { start, end: start + edit.text.length, text: edit.text, walkStop: true };
+      }
+    }
+    shift += delta;
+  }
+  return {
+    session: { ...session, active: undefined, anchor, focusedToken },
+    effects: {
+      // Descending so the sequential replaceRange calls don't invalidate later offsets.
+      edits: [...edits].reverse(),
+      keypad: session.active != null ? "close" : undefined,
+    },
+  };
+}
+
+function focusedRemoval(session: ILiftoEditorSession): ILiftoEditorEditPlan | undefined {
+  const levelIndex = focusedLevelIndex(session);
+  return session.context != null && levelIndex != null
+    ? session.adapter.removal(session.text, session.context, levelIndex)
+    : undefined;
+}
+
+function planResult(session: ILiftoEditorSession, plan: ILiftoEditorEditPlan): ILiftoEditorSessionResult {
+  const edits = [...plan.edits].sort((a, b) => b.start - a.start);
+  const unfocused = { ...session, active: undefined, focusedToken: undefined, focusLevel: undefined };
+  if (plan.freeformAt != null) {
+    return {
+      session: { ...unfocused, mode: "freeform", context: undefined, pendingCaret: plan.freeformAt },
+      effects: { edits, keypad: "close" },
+    };
+  }
+  if (plan.focusAt != null) {
+    return {
+      session: { ...unfocused, anchor: plan.focusAt, context: session.context ?? { breadcrumb: [], levels: [] } },
+      effects: { edits, keypad: session.active != null ? "close" : undefined },
+    };
+  }
+  return { session: { ...unfocused, context: undefined }, effects: { edits, keypad: "close" } };
+}
+
+export function LiftoEditorSession_removeFocused(session: ILiftoEditorSession): ILiftoEditorSessionResult {
+  const plan = focusedRemoval(session);
+  return plan != null ? planResult(session, plan) : { session, effects: {} };
+}
+
+// The keypad's onBlur: dismissed by tapping elsewhere or the dismiss key.
+export function LiftoEditorSession_deactivate(session: ILiftoEditorSession): ILiftoEditorSessionResult {
+  return {
+    session: { ...session, active: undefined, focusedToken: undefined },
+    effects: { keypad: "close" },
+  };
+}
+
+// Focus moved to a different editor on the same screen. Unlike deactivate — which only ends
+// the keypad session — this drops the whole focus stack, so the backgrounded editor stops
+// drawing its level and active-token highlights.
+export function LiftoEditorSession_blur(session: ILiftoEditorSession): ILiftoEditorSessionResult {
+  return {
+    session: {
+      ...session,
+      active: undefined,
+      focusedToken: undefined,
+      context: undefined,
+      focusLevel: undefined,
+      anchor: undefined,
+    },
+    effects: { keypad: "close" },
+  };
+}
+
+export function LiftoEditorSession_switchToFreeform(session: ILiftoEditorSession): ILiftoEditorSessionResult {
+  if (!session.adapter.canFreeform(session.text)) {
+    return { session, effects: {} };
+  }
+  return {
+    session: {
+      ...session,
+      mode: "freeform",
+      active: undefined,
+      focusedToken: undefined,
+      context: undefined,
+      focusLevel: undefined,
+    },
+    effects: { keypad: "close" },
+  };
+}
+
+export function LiftoEditorSession_switchToStructured(session: ILiftoEditorSession): ILiftoEditorSessionResult {
+  return { session: { ...session, mode: "structured" }, effects: {} };
+}
+
+// The freeform caret can only be placed once the native side has committed `editable`; the
+// shell consumes it in a post-render effect.
+export function LiftoEditorSession_consumePendingCaret(session: ILiftoEditorSession): {
+  session: ILiftoEditorSession;
+  caret: number | undefined;
+} {
+  return { session: { ...session, pendingCaret: undefined }, caret: session.pendingCaret };
+}
+
+// The editor echoed a text change (structured edits round-trip through the native side;
+// freeform typing lands here directly). Edits move offsets, so the context (and especially
+// pill insert positions) must be recomputed from the current text — stale offsets would
+// splice into the middle of tokens.
+export function LiftoEditorSession_textChanged(session: ILiftoEditorSession, newText: string): ILiftoEditorSession {
+  const next = { ...session, text: newText };
+  if (session.context != null) {
+    const anchor = currentAnchor(next);
+    if (anchor != null) {
+      return { ...next, context: session.adapter.contextAt(newText, Math.min(anchor, newText.length)) };
+    }
+  }
+  return next;
+}
+
+export function LiftoEditorSession_activeLevelIndex(session: ILiftoEditorSession): number {
+  const levels = session.context?.levels ?? [];
+  return session.focusLevel != null ? Math.min(session.focusLevel, levels.length - 1) : levels.length - 1;
+}
+
+// Which exercise the caret sits in, as the planner's fullName. Inline this is the only way
+// to tell — the document holds every exercise in the day.
+export function LiftoEditorSession_focusedExerciseFullName(session: ILiftoEditorSession): string | undefined {
+  return session.context?.levels.find((level) => level.nodeName === PlannerNodeName.ExerciseExpression)?.fullName;
+}
+
+export function LiftoEditorSession_canRemove(session: ILiftoEditorSession): boolean {
+  return focusedRemoval(session) != null;
+}
+
+// Levels that own no rail (a set group's `auto`, a reuse target's week/day) are transparent —
+// the walk falls through to the nearest ancestor that owns one, so focusing a token surfaces
+// its context's actions. It stops at the first owner even when that rail is empty: `used: none`
+// should show "No actions", not the whole exercise's pills.
+export function LiftoEditorSession_pills(session: ILiftoEditorSession): ILiftoEditorPill[] {
+  const levels = session.context?.levels ?? [];
+  for (let i = LiftoEditorSession_activeLevelIndex(session); i >= 0; i -= 1) {
+    const level = levels[i];
+    if (level?.ownsRail) {
+      return session.adapter.railPills(session.text, level.pills);
+    }
+  }
+  return [];
+}
+
+export function LiftoEditorSession_highlight(session: ILiftoEditorSession): ILiftoEditorStyledRange[] {
+  const ranges: ILiftoEditorStyledRange[] = [];
+  const levelIndex = focusedLevelIndex(session);
+  const level = session.context != null && levelIndex != null ? session.context.levels[levelIndex] : undefined;
+  if (level != null && level.end > level.start) {
+    ranges.push({ start: level.start, end: level.end, backgroundColor: Tailwind_semantic().background.editorfocus });
+  }
+  const active = session.active;
+  if (active != null) {
+    ranges.push({
+      start: active.token.start,
+      end: active.token.start + active.length,
+      backgroundColor: Tailwind_semantic().background.editoractive,
+    });
+  }
+  return ranges;
+}

@@ -1,0 +1,339 @@
+import { JSX, memo } from "react";
+import { View, Pressable } from "react-native";
+import { Text } from "../primitives/text";
+import { IPlannerState, IPlannerUi } from "../../pages/planner/models/types";
+import { ILensDispatch } from "../../utils/useLensReducer";
+import { lb, LensBuilder } from "lens-shmens";
+import { IDayData, IPlannerProgramDay, IPlannerProgramWeek, ISettings } from "../../types";
+import { IconMusclesD } from "../icons/iconMusclesD";
+import { IconArrowRight } from "../icons/iconArrowRight";
+import { IconArrowDown2 } from "../icons/iconArrowDown2";
+import { MarkdownEditorBorderless } from "../markdownEditorBorderless";
+import { StringUtils_pluralize } from "../../utils/string";
+import { IconTimerSmall } from "../icons/iconTimerSmall";
+import { TimeUtils_formatHOrMin } from "../../utils/time";
+import { Translate_format, Translate_text } from "../../i18n/translate";
+import { PlannerStatsUtils_dayApproxTimeMs } from "../../pages/planner/models/plannerStatsUtils";
+import { EditProgramUiExerciseView } from "./editProgramUiExercise";
+import { pickerStateFromPlannerExercise } from "./editProgramUtils";
+import { LinkButton } from "../linkButton";
+import { EditProgramV2TextExercises } from "./editProgramV2TextExercises";
+import { IPlannerEvalResult } from "../../pages/planner/plannerExerciseEvaluator";
+import { Button } from "../button";
+import { IconPlus2 } from "../icons/iconPlus2";
+import { ContentGrowingTextarea } from "../contentGrowingTextarea";
+import { IDispatch } from "../../ducks/types";
+import { IEvaluatedProgram } from "../../models/program";
+import { useProgressiveItems } from "../../utils/useProgressiveItems";
+import { navigateToModal } from "../../navigation/navigationService";
+
+interface IEditProgramDayViewProps {
+  state: IPlannerState;
+  day: IPlannerProgramDay;
+  dayData: Required<IDayData>;
+  isValidProgram: boolean;
+  evaluatedProgram: IEvaluatedProgram;
+  evaluatedDay: IPlannerEvalResult;
+  lbPlannerWeek: LensBuilder<IPlannerState, IPlannerProgramWeek, {}, undefined>;
+  weekIndex: number;
+  dayInWeekIndex: number;
+  settings: ISettings;
+  exerciseFullNames: string[];
+  programId: string;
+  dispatch: IDispatch;
+  plannerDispatch: ILensDispatch<IPlannerState>;
+}
+
+export const EditProgramUiDayView = memo(function EditProgramUiDayView(props: IEditProgramDayViewProps): JSX.Element {
+  const lbPlannerDay = props.lbPlannerWeek.p("days").i(props.dayInWeekIndex);
+  const ui = props.state.ui;
+  const isCollapsed = ui.dayUi.collapsed.has(`${props.weekIndex}-${props.dayInWeekIndex}`);
+
+  return (
+    <View
+      key={props.day.id}
+      className="p-1 my-1 border bg-background-default rounded-2xl border-border-neutral"
+      data-testid={`edit-day-${props.weekIndex + 1}-${props.dayInWeekIndex + 1}`}
+      testID={`edit-day-${props.weekIndex + 1}-${props.dayInWeekIndex + 1}`}
+    >
+      <View className="flex-row items-center">
+        <View className="flex-1 pl-2">
+          <ContentGrowingTextarea
+            className="text-base font-bold"
+            value={props.day.name}
+            onInput={(newValue) => {
+              if (newValue) {
+                props.plannerDispatch(lbPlannerDay.p("name").record(newValue), "Update day name");
+              }
+            }}
+          />
+        </View>
+        <View className="flex-row items-center">
+          <View>
+            <Pressable
+              data-testid="edit-day-muscles-d"
+              testID="edit-day-muscles-d"
+              className="px-2 nm-day-muscles-d"
+              onPress={() => {
+                props.plannerDispatch(
+                  lb<IPlannerState>().p("ui").p("showDayStats").record(props.dayInWeekIndex),
+                  "Show day stats"
+                );
+                navigateToModal("dayStatsModal", { programId: props.programId });
+              }}
+            >
+              <IconMusclesD size={20} />
+            </Pressable>
+          </View>
+          <View>
+            <Pressable
+              className="w-scaled-8 pl-1 pr-2 items-center nm-edit-day-expand-collapse-day"
+              onPress={() => {
+                props.plannerDispatch(
+                  lb<IPlannerState>()
+                    .p("ui")
+                    .p("dayUi")
+                    .p("collapsed")
+                    .recordModify((collapsed) => {
+                      const newCollapsed = new Set(Array.from(collapsed));
+                      const key = `${props.weekIndex}-${props.dayInWeekIndex}`;
+                      if (newCollapsed.has(key)) {
+                        newCollapsed.delete(key);
+                      } else {
+                        newCollapsed.add(key);
+                      }
+                      return newCollapsed;
+                    }),
+                  "Toggle day collapse"
+                );
+              }}
+            >
+              {isCollapsed ? <IconArrowRight /> : <IconArrowDown2 />}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+      {!isCollapsed && (
+        <EditProgramUiDayContentView
+          evaluatedProgram={props.evaluatedProgram}
+          isValidProgram={props.isValidProgram}
+          day={props.day}
+          dispatch={props.dispatch}
+          programId={props.programId}
+          settings={props.settings}
+          ui={ui}
+          dayData={props.dayData}
+          exerciseFullNames={props.exerciseFullNames}
+          plannerDispatch={props.plannerDispatch}
+          lbPlannerDay={lbPlannerDay}
+          evaluatedDay={props.evaluatedDay}
+          weekIndex={props.weekIndex}
+          dayIndex={props.dayInWeekIndex}
+        />
+      )}
+    </View>
+  );
+});
+
+interface IEditProgramDayContentViewProps {
+  day: IPlannerProgramDay;
+  dispatch: IDispatch;
+  programId: string;
+  plannerDispatch: ILensDispatch<IPlannerState>;
+  evaluatedProgram: IEvaluatedProgram;
+  lbPlannerDay: LensBuilder<IPlannerState, IPlannerProgramDay, {}, undefined>;
+  ui: IPlannerUi;
+  isValidProgram: boolean;
+  dayData: Required<IDayData>;
+  weekIndex: number;
+  exerciseFullNames: string[];
+  dayIndex: number;
+  settings: ISettings;
+  evaluatedDay: IPlannerEvalResult;
+}
+
+const EditProgramUiDayContentView = memo(function EditProgramUiDayContentView(
+  props: IEditProgramDayContentViewProps
+): JSX.Element {
+  const { evaluatedDay } = props;
+  const duration = TimeUtils_formatHOrMin(
+    PlannerStatsUtils_dayApproxTimeMs(
+      evaluatedDay.success ? evaluatedDay.data : [],
+      props.settings.timers.workout || 0,
+      props.settings
+    )
+  );
+  const { weekIndex, dayIndex } = props;
+  const lbPlanner = lb<IPlannerState>().p("current").p("program").pi("planner");
+  const allExercisesCollapsed = evaluatedDay.success
+    ? evaluatedDay.data.every((e) => {
+        return props.ui.exerciseUi.collapsed.has(`${e.key}-${props.weekIndex}-${props.dayIndex}`);
+      })
+    : false;
+  const usedExercises = evaluatedDay.success ? evaluatedDay.data.filter((d) => !d.notused) : [];
+  const notUsedExercises = evaluatedDay.success ? evaluatedDay.data.filter((d) => d.notused) : [];
+  const visibleUsedExercises = useProgressiveItems(usedExercises, {
+    initialBatch: 3,
+    batchSize: 10,
+    debugLabel: `Edit/day-${props.weekIndex}-${props.dayIndex}-exercises`,
+    resetKey: `${weekIndex}-${dayIndex}`,
+  });
+  return (
+    <View className="px-1">
+      <View className="px-1">
+        <MarkdownEditorBorderless
+          value={props.day.description}
+          placeholder={Translate_text("Day description in Markdown...")}
+          debounceMs={500}
+          onChange={(v) => {
+            props.plannerDispatch(props.lbPlannerDay.p("description").record(v), "Update day description");
+          }}
+        />
+      </View>
+      <View className="flex-row items-center gap-2 pt-1 pl-2">
+        {evaluatedDay.success && (
+          <View>
+            <Text className="text-xs">
+              {Translate_format(`{n} ${StringUtils_pluralize("exercise", evaluatedDay.data.length)}`, {
+                n: evaluatedDay.data.length,
+              })}
+            </Text>
+          </View>
+        )}
+        <View className="flex-row items-center py-1">
+          <View>
+            <IconTimerSmall />
+          </View>
+          <View>
+            <Text className="text-xs">
+              {Translate_format("{value} {unit}", {
+                value: duration.value,
+                unit: Translate_text(duration.unit, "duration"),
+              })}
+            </Text>
+          </View>
+        </View>
+        {props.ui.mode === "ui" && evaluatedDay.success && (
+          <View className="ml-auto mr-2">
+            <LinkButton
+              name="collapse-all-exercises"
+              className="text-xs font-normal"
+              onClick={() => {
+                props.plannerDispatch(
+                  lb<IPlannerState>()
+                    .p("ui")
+                    .p("exerciseUi")
+                    .p("collapsed")
+                    .recordModify((collapsed) => {
+                      const newCollapsed = new Set<string>(collapsed);
+                      const exercises = evaluatedDay.data;
+                      for (const exercise of exercises) {
+                        const key = `${exercise.key}-${props.weekIndex}-${props.dayIndex}`;
+                        if (allExercisesCollapsed) {
+                          newCollapsed.delete(key);
+                        } else {
+                          newCollapsed.add(key);
+                        }
+                      }
+                      return newCollapsed;
+                    }),
+                  "Toggle all exercises"
+                );
+              }}
+            >
+              {Translate_text(allExercisesCollapsed ? "Expand all exercises" : "Collapse all exercises")}
+            </LinkButton>
+          </View>
+        )}
+      </View>
+      <View className="pt-2">
+        {props.ui.mode === "ui" && props.isValidProgram && evaluatedDay.success ? (
+          <View>
+            {visibleUsedExercises.map((exercise, exerciseIndex) => {
+              const exCollapseKey = `${exercise.key}-${exercise.dayData.week - 1}-${exercise.dayData.dayInWeek - 1}`;
+              return (
+                <EditProgramUiExerciseView
+                  key={exercise.fullName || exerciseIndex}
+                  isCollapsed={props.ui.exerciseUi.collapsed.has(exCollapseKey)}
+                  plannerExercise={exercise}
+                  evaluatedProgram={props.evaluatedProgram}
+                  dispatch={props.dispatch}
+                  programId={props.programId}
+                  plannerDispatch={props.plannerDispatch}
+                  weekIndex={props.weekIndex}
+                  dayIndex={props.dayIndex}
+                  exerciseIndex={exerciseIndex}
+                  settings={props.settings}
+                  showNumber={true}
+                />
+              );
+            })}
+            {notUsedExercises.map((exercise, exerciseIndex) => {
+              const exCollapseKey = `${exercise.key}-${exercise.dayData.week - 1}-${exercise.dayData.dayInWeek - 1}`;
+              return (
+                <EditProgramUiExerciseView
+                  key={exercise.key || exerciseIndex}
+                  isCollapsed={props.ui.exerciseUi.collapsed.has(exCollapseKey)}
+                  plannerExercise={exercise}
+                  evaluatedProgram={props.evaluatedProgram}
+                  dispatch={props.dispatch}
+                  programId={props.programId}
+                  plannerDispatch={props.plannerDispatch}
+                  weekIndex={props.weekIndex}
+                  dayIndex={props.dayIndex}
+                  exerciseIndex={exerciseIndex}
+                  settings={props.settings}
+                />
+              );
+            })}
+            <View className="py-1">
+              <Button
+                kind="lightgrayv3"
+                buttonSize="md"
+                data-testid="add-exercise"
+                testID="add-exercise"
+                name="add-exercise"
+                className="flex-row items-center justify-center w-full"
+                onClick={() => {
+                  props.plannerDispatch(
+                    lb<IPlannerState>()
+                      .p("ui")
+                      .p("exercisePicker")
+                      .record({
+                        dayData: {
+                          week: weekIndex + 1,
+                          dayInWeek: dayIndex + 1,
+                        },
+                        change: "all",
+                        state: pickerStateFromPlannerExercise(props.settings),
+                      }),
+                    "Open add exercise picker"
+                  );
+                }}
+              >
+                <IconPlus2 size={12} />
+                <Text className="ml-2 text-sm text-text-link font-semibold">Add Exercise</Text>
+              </Button>
+            </View>
+          </View>
+        ) : (
+          <View className="flex-row">
+            <EditProgramV2TextExercises
+              weekIndex={weekIndex}
+              dayIndex={dayIndex}
+              plannerDay={props.day}
+              exerciseFullNames={props.exerciseFullNames}
+              plannerDispatch={props.plannerDispatch}
+              lbProgram={lbPlanner}
+              evaluatedDay={evaluatedDay}
+              settings={props.settings}
+              ui={props.ui}
+              evaluatedProgram={props.evaluatedProgram}
+              dayData={props.dayData}
+            />
+          </View>
+        )}
+      </View>
+    </View>
+  );
+});

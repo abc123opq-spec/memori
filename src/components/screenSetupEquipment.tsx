@@ -1,0 +1,224 @@
+import { ExerciseDisplayName_equipment } from "../i18n/exerciseDisplayName";
+import { JSX } from "react";
+import { View, ScrollView, Pressable, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Text } from "./primitives/text";
+import { Switch } from "./primitives/switch";
+import { IDispatch } from "../ducks/types";
+import { ISettings, IStats } from "../types";
+import { INavCommon, IState } from "../models/state";
+import { useNavOptions } from "../navigation/useNavOptions";
+import { Thunk_pushScreen } from "../ducks/thunks";
+import { Button } from "./button";
+import { EquipmentList, equipmentToIcon } from "./equipmentList";
+import { Equipment_getCurrentGym, Equipment_getEquipmentData, Equipment_getEquipmentOfGym } from "../models/equipment";
+import { lb } from "lens-shmens";
+import { ObjectUtils_keys } from "../utils/object";
+import { PersonalArtImage } from "../personal/personalArtImage";
+import { Tailwind_colors, Tailwind_semantic } from "../utils/tailwindConfig";
+import { navigateToModal } from "../navigation/navigationService";
+
+function getFooterShadowStyle(): Record<string, unknown> {
+  const semantic = Tailwind_semantic();
+  const colors = Tailwind_colors();
+  return Platform.select({
+    ios: {
+      shadowColor: semantic.background.default === colors.black ? colors.white : colors.black,
+      shadowOffset: { width: 0, height: -2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+    },
+    android: { elevation: 4 },
+    default: { boxShadow: "0 0 4px 0 rgba(0, 0, 0, 0.2)" },
+  }) as Record<string, unknown>;
+}
+
+interface IScreenSetupEquipmentProps {
+  dispatch: IDispatch;
+  settings: ISettings;
+  selectedGymId?: string;
+  stats: IStats;
+  navCommon: INavCommon;
+}
+
+export function ScreenSetupEquipment(props: IScreenSetupEquipmentProps): JSX.Element {
+  const currentGym = Equipment_getCurrentGym(props.settings);
+  const allEquipment = Equipment_getEquipmentOfGym(props.settings, props.selectedGymId);
+  const insets = useSafeAreaInsets();
+
+  useNavOptions({ navHidden: true });
+
+  return (
+    <View className="flex flex-col flex-1 bg-background-default" style={{ paddingTop: insets.top }}>
+      <ScrollView className="flex-1" contentContainerClassName="px-4 pt-8 pb-4">
+        {/* personal-fork: mascot removed, art slot in src/personal/art.ts */}
+        <PersonalArtImage slot="onboarding" className="items-center p-4" />
+        <View className="px-2 -mt-1">
+          <Text className="mb-2 text-xl font-bold text-center text-text-primary">What equipment do you have?</Text>
+          <Text className="mb-4 text-sm text-center text-text-secondary">
+            Toggle on the equipment available at your gym. This helps the app round weights to what you can actually
+            load.
+          </Text>
+
+          <View style={{ gap: 8 }}>
+            {ObjectUtils_keys(allEquipment).map((eqid) => {
+              const equipmentData = Equipment_getEquipmentData(props.settings, eqid);
+              const isEnabled = equipmentData && !equipmentData.isDeleted;
+              const name = ExerciseDisplayName_equipment(eqid, allEquipment);
+              const icon = equipmentToIcon[eqid] ? equipmentToIcon[eqid]() : null;
+              return (
+                <Pressable
+                  key={eqid}
+                  testID={`equipment-toggle-${eqid}`}
+                  data-testid={`equipment-toggle-${eqid}`}
+                  className={`flex-row items-center px-4 py-3 border rounded-xl ${
+                    isEnabled
+                      ? "bg-background-subtlecardpurple border-border-cardpurple"
+                      : "bg-background-default border-border-neutral"
+                  }`}
+                  style={{ gap: 12 }}
+                  onPress={() => {
+                    props.dispatch({
+                      type: "UpdateState",
+                      lensRecording: [
+                        lb<IState>()
+                          .p("storage")
+                          .p("settings")
+                          .p("gyms")
+                          .findBy("id", currentGym.id)
+                          .p("equipment")
+                          .pi(eqid)
+                          .p("isDeleted")
+                          .record(!isEnabled ? false : true),
+                      ],
+                      desc: `Toggle equipment ${eqid}`,
+                    });
+                  }}
+                >
+                  {icon && <View>{icon}</View>}
+                  <Text className="flex-1 text-sm font-semibold">{name}</Text>
+                  <Switch
+                    value={!!isEnabled}
+                    onValueChange={() => {
+                      props.dispatch({
+                        type: "UpdateState",
+                        lensRecording: [
+                          lb<IState>()
+                            .p("storage")
+                            .p("settings")
+                            .p("gyms")
+                            .findBy("id", currentGym.id)
+                            .p("equipment")
+                            .pi(eqid)
+                            .p("isDeleted")
+                            .record(!isEnabled ? false : true),
+                        ],
+                        desc: `Toggle equipment ${eqid}`,
+                      });
+                    }}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </ScrollView>
+      <View className="bg-background-default" style={[{ paddingBottom: insets.bottom || 8 }, getFooterShadowStyle()]}>
+        <View className="flex-row px-gutter pt-2 pb-2" style={{ gap: 8 }}>
+          <Button
+            className="flex-1 ls-onboarding-equipment-skip"
+            name="setup-equipment-skip"
+            kind="lightgrayv3"
+            buttonSize="lg"
+            data-testid="setup-equipment-skip"
+            // personal-fork: the hear-about-us survey goes to the author, so onboarding skips it
+            testID="setup-equipment-skip"
+            onClick={() => props.dispatch(Thunk_pushScreen("programselect"))}
+          >
+            Skip
+          </Button>
+          <Button
+            className="flex-1 ls-onboarding-equipment-setup"
+            name="setup-equipment-continue"
+            kind="purple"
+            buttonSize="lg"
+            data-testid="setup-equipment-continue"
+            testID="setup-equipment-continue"
+            onClick={() => props.dispatch(Thunk_pushScreen("setupplates"))}
+          >
+            Set up plates
+          </Button>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+interface IScreenSetupPlatesProps {
+  dispatch: IDispatch;
+  settings: ISettings;
+  stats: IStats;
+  navCommon: INavCommon;
+}
+
+export function ScreenSetupPlates(props: IScreenSetupPlatesProps): JSX.Element {
+  const currentGym = Equipment_getCurrentGym(props.settings);
+  const insets = useSafeAreaInsets();
+
+  useNavOptions({ navTitle: "Set Up Plates" });
+
+  return (
+    <View className="flex flex-col flex-1 bg-background-default" style={{ paddingTop: insets.top }}>
+      <ScrollView
+        className="flex-1 bg-background-default"
+        contentContainerStyle={{ paddingBottom: 80 + insets.bottom }}
+        automaticallyAdjustKeyboardInsets
+        keyboardShouldPersistTaps="never"
+        keyboardDismissMode="interactive"
+      >
+        {/* personal-fork: mascot removed, art slot in src/personal/art.ts */}
+        <PersonalArtImage slot="onboarding" className="items-center p-4" />
+        <View className="px-gutter pb-4">
+          <Text className="mb-2 text-xl font-bold text-center text-text-primary">Set up your plates</Text>
+          <Text i18nContext="setupEquipment" className="text-sm text-center text-text-secondary">
+            Tap an equipment to set up its{" "}
+            <Text i18nContext="setupEquipment" className="text-sm font-bold text-text-secondary">
+              bar
+            </Text>{" "}
+            and{" "}
+            <Text i18nContext="setupEquipment" className="text-sm font-bold text-text-secondary">
+              plates
+            </Text>
+            , or its weight stack. The app uses this to round program weights to what you can actually load.
+          </Text>
+        </View>
+        <EquipmentList
+          gymId={currentGym.id}
+          allEquipment={currentGym.equipment}
+          settings={props.settings}
+          dispatch={props.dispatch}
+          onOpen={(equipmentId) =>
+            props.dispatch(Thunk_pushScreen("equipmentDetail", { gymId: currentGym.id, equipmentId }))
+          }
+          onAdd={() => navigateToModal("newEquipmentModal", { gymId: currentGym.id })}
+        />
+      </ScrollView>
+      <View
+        className="absolute bottom-0 left-0 right-0 px-4 pt-4 bg-background-default"
+        style={[{ paddingBottom: insets.bottom || 16 }, getFooterShadowStyle()]}
+      >
+        <Button
+          className="w-full ls-onboarding-plates"
+          name="setup-plates-continue"
+          kind="purple"
+          buttonSize="lg"
+          onClick={() => props.dispatch(Thunk_pushScreen("programselect"))}
+          data-testid="setup-plates-continue"
+          testID="setup-plates-continue"
+        >
+          Continue
+        </Button>
+      </View>
+    </View>
+  );
+}

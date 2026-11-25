@@ -1,0 +1,114 @@
+import { test, expect } from "@playwright/test";
+import {
+  startpage,
+  PlaywrightUtils_disableSubscriptions,
+  PlaywrightUtils_createProgram,
+  PlaywrightUtils_disableTours,
+  PlaywrightUtils_saveExerciseInSheet,
+} from "./playwrightUtils";
+
+test("CRUD custom exercises", async ({ page }) => {
+  await page.goto(startpage + "?skipintro=1");
+  await PlaywrightUtils_disableTours(page);
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await PlaywrightUtils_createProgram(page, "My Program");
+  await PlaywrightUtils_disableSubscriptions(page);
+
+  await page.getByTestId("tab-edit").click();
+  await page.getByTestId("editor-v2-ui-program").click();
+  await page.getByTestId("add-exercise").click();
+  await page.getByTestId("custom-exercise-create").click();
+  await page.getByTestId("custom-exercise-name-input").fill("My Exercise");
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("custom-exercise-edit-my-exercise").click();
+  await page.getByTestId("custom-exercise-name-input").fill("My Exercise 2");
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("menu-item-my-exercise-2").click();
+  await page.getByTestId("exercise-picker-confirm").click();
+
+  await page.getByTestId("edit-exercise").click();
+  await PlaywrightUtils_saveExerciseInSheet(page, "My Exercise 2 / 1x1 / 100lb / warmup: none");
+  await page.getByTestId("save-program").click();
+
+  await page.getByTestId("footer-workout").click();
+  await page.getByTestId("bottom-sheet").getByTestId("start-workout").click();
+
+  await page.getByTestId("complete-set").click();
+
+  await page.getByTestId("finish-workout").click();
+  await page.getByTestId("finish-day-continue").click();
+
+  await page.getByTestId("footer-program").click();
+  await page.getByTestId("tab-edit").click();
+  await page.getByTestId("editor-v2-ui-program").click();
+  // A single-instance exercise's swap goes straight to the picker (no one/all menu).
+  await page.getByTestId("edit-exercise-swap").click();
+  await page.getByTestId("custom-exercise-edit-my-exercise-2").click();
+  await page.getByTestId("custom-exercise-delete").click();
+
+  await page.getByTestId("custom-exercise-create").click();
+  await page.getByTestId("custom-exercise-name-input").fill("Blah One");
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("menu-item-blah-one").click();
+  await page.getByTestId("exercise-picker-confirm").click();
+  await page.getByTestId("edit-exercise").click();
+  await PlaywrightUtils_saveExerciseInSheet(page, "Blah One / 2x1 / 100lb / warmup: none");
+  await page.getByTestId("save-program").click();
+  await page.getByTestId("footer-home").click();
+
+  await expect(page.getByTestId("history-entry-exercise-name").nth(1)).toHaveText("My Exercise 2 🏆");
+  await page.getByTestId("footer-workout").click();
+  await expect(page.getByTestId("bottom-sheet").getByTestId("history-entry-exercise-name").nth(0)).toHaveText(
+    "Blah One"
+  );
+  await page.getByTestId("bottom-sheet-close").and(page.locator(":visible")).click();
+  await page.waitForTimeout(200);
+
+  await page.getByTestId("footer-program").click();
+  await page.getByTestId("tab-edit").click();
+  await page.getByTestId("editor-v2-ui-program").click();
+  await page.getByTestId("edit-exercise-swap").click();
+
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("custom-exercise-name-input").fill("My Exercise 2");
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("custom-exercise-edit-my-exercise-2").click();
+  await page.getByTestId("custom-exercise-name-input").fill("My Exercise 3");
+  await page.getByTestId("select-target-muscles").click();
+  await page.getByTestId("select-muscle-adductor-magnus").click();
+  await page.getByTestId("select-muscle-deltoid-posterior").click();
+  await page.getByTestId("done-selecting-muscles").click();
+  await page.getByTestId("select-synergist-muscles").click();
+  await page.getByTestId("select-muscle-obliques").click();
+  await page.getByTestId("done-selecting-muscles").click();
+  await page.getByTestId("custom-exercise-create").click();
+
+  await page.getByTestId("menu-item-my-exercise-3").click();
+  await page.getByTestId("exercise-picker-confirm").click();
+  await page.getByTestId("save-program").click();
+  await page.getByTestId("footer-home").click();
+
+  await expect(page.getByTestId("history-entry-exercise-name").nth(1)).toHaveText("My Exercise 3 🏆");
+
+  await page.getByTestId("footer-workout").click();
+  await expect(page.getByTestId("bottom-sheet").getByTestId("history-entry-exercise-name").nth(0)).toHaveText(
+    "My Exercise 3"
+  );
+  await page.getByTestId("bottom-sheet-close").and(page.locator(":visible")).click();
+  await page.waitForTimeout(200);
+
+  await page.getByTestId("footer-program").click();
+  await page.getByTestId("tab-edit").click();
+  await page.getByTestId("editor-v2-ui-program").click();
+  await page.getByTestId("editor-v2-week-muscles").click();
+  await expect(page.getByTestId("modal").and(page.locator(":visible"))).toContainText("Rear Delts: 2");
+  await expect(page.getByTestId("modal").and(page.locator(":visible"))).toContainText("Adductors: 2");
+  await expect(page.getByTestId("modal").and(page.locator(":visible"))).toContainText("Obliques: 1");
+  await expect(page.getByTestId("modal").and(page.locator(":visible"))).toContainText("Triceps: 0");
+});

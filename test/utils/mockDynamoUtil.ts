@@ -1,0 +1,529 @@
+import { NativeAttributeValue } from "@aws-sdk/lib-dynamodb";
+import {
+  IDynamoCondition,
+  IDynamoQueryPage,
+  IDynamoQueryPageArgs,
+  IDynamoTransactDelete,
+  IDynamoTransactPut,
+  IDynamoUtil,
+} from "../../lambda/utils/dynamo";
+import { ILogUtil } from "../../lambda/utils/log";
+import deepmerge from "deepmerge";
+import { userTableNames } from "../../lambda/dao/userDao";
+import { apiKeyTableNames } from "../../lambda/dao/apiKeyDao";
+import { pushEndpointTableNames } from "../../lambda/dao/pushEndpointDao";
+import { oauthTableNames } from "../../lambda/dao/oauthDao";
+import { freeUsersTableNames } from "../../lambda/dao/freeUserDao";
+import { followTableNames } from "../../lambda/dao/followDao";
+import { followInviteTableNames } from "../../lambda/dao/followInviteDao";
+import { reactionTableNames } from "../../lambda/dao/reactionDao";
+import { programEditTableNames } from "../../lambda/dao/programEditDao";
+import { CollectionUtils_compact } from "../../src/utils/collection";
+import { ObjectUtils_entries, ObjectUtils_values, ObjectUtils_clone } from "../../src/utils/object";
+
+const idKeys: Partial<Record<string, string[]>> = {
+  [userTableNames.prod.users]: ["id"],
+  [userTableNames.prod.events]: ["userId", "timestamp"],
+  [userTableNames.prod.historyRecords]: ["userId", "id"],
+  [userTableNames.prod.programs]: ["userId", "id"],
+  [userTableNames.prod.dashboards]: ["userId", "id"],
+  [userTableNames.prod.stats]: ["userId", "name"],
+  [apiKeyTableNames.prod.apiKeys]: ["key"],
+  [pushEndpointTableNames.prod.pushEndpoints]: ["userId", "deviceId"],
+  [oauthTableNames.prod.clients]: ["clientId"],
+  [oauthTableNames.prod.authCodes]: ["code"],
+  [oauthTableNames.prod.tokens]: ["token"],
+  [freeUsersTableNames.prod.freeUsers]: ["id"],
+  lftSubscriptionDetails: ["userId"],
+  lftPayments: ["userId", "transactionId"],
+  lftAffiliates: ["affiliateId", "userId"],
+  lftEmailAuthTokens: ["token"],
+  [followTableNames.prod.follows]: ["followerId", "followeeId"],
+  [followInviteTableNames.prod.followInvites]: ["token"],
+  [reactionTableNames.prod.reactions]: ["target", "reactorId"],
+  [programEditTableNames.prod.programEdits]: ["ownerId", "id"],
+};
+
+// Sort key used to order results when a query passes scanIndexForward. GSIs sort by a different attribute
+// than their base table, so they're listed explicitly here.
+const indexSortKeys: Partial<Record<string, string>> = {
+  [userTableNames.prod.statsTimestamp]: "timestamp",
+  [userTableNames.prod.historyRecordsDate]: "date",
+};
+
+const tableSortKeys: Partial<Record<string, string>> = {
+  [userTableNames.prod.historyRecords]: "id",
+  [programEditTableNames.prod.programEdits]: "id",
+};
+
+const userIndexProjectedAttributes: Partial<Record<string, string[]>> = {
+  [userTableNames.prod.usersGoogleIdKeys]: ["googleId", "id"],
+  [userTableNames.prod.usersAppleIdKeys]: ["appleId", "id"],
+  [userTableNames.prod.usersEmailKeys]: ["email", "id"],
+};
+
+function pickAttributes<T>(item: T, attributes: string[]): T {
+  return Object.fromEntries(Object.entries(item as object).filter(([key]) => attributes.includes(key))) as T;
+}
+
+function compareValues(a: unknown, b: unknown): number {
+  const an = typeof a === "number" ? a : Number(a);
+  const bn = typeof b === "number" ? b : Number(b);
+  if (!isNaN(an) && !isNaN(bn) && `${a}`.trim() !== "" && `${b}`.trim() !== "") {
+    return an - bn;
+  }
+  return `${a}`.localeCompare(`${b}`);
+}
+
+export class MockDynamoUtil implements IDynamoUtil {
+  public data: Record<string, Record<string, unknown>> = {};
+
+  constructor(public readonly log: ILogUtil) {}
+
+  public addMockData<T>(newData: Record<string, Record<string, T>>): void {
+    this.data = deepmerge(this.data, newData);
+  }
+
+  private buildCondition<T>(args: {
+    filterExpression: string;
+    attrs?: Record<string, string>;
+    values?: Partial<Record<string, string | string[] | number | number[]>>;
+  }): (item: T) => boolean {
+    let expression = args.filterExpression;
+    for (const [k, v] of ObjectUtils_entries(args.attrs || {})) {
+      expression = expression.replace(new RegExp(k, "g"), v);
+    }
+    for (const [k, v] of ObjectUtils_entries(args.values || {})) {
+      const value = Array.isArray(v) ? `IN (${v.map((x) => `${x}`).join(",")})` : `${v}`;
+      expression = expression.replace(new RegExp(k, "g"), value);
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clauses: ((item: any) => boolean)[] = [];
+    let expr = expression;
+
+    expr = expr.replace(/([\w.]+)\s+BETWEEN\s+(\S+)\s+AND\s+(\S+)/gi, (_m, field: string, a: string, b: string) => {
+      clauses.push((item) => compareValues(item[field], a) >= 0 && compareValues(item[field], b) <= 0);
+      return "";
+    });
+    expr = expr.replace(/contains\(\s*([\w.]+)\s*,\s*([^)]+?)\s*\)/gi, (_m, field: string, val: string) => {
+      clauses.push((item) => typeof item[field] === "string" && item[field].includes(val));
+      return "";
+    });
+    expr = expr.replace(/begins_with\(\s*([\w.]+)\s*,\s*([^)]+?)\s*\)/gi, (_m, field: string, val: string) => {
+      clauses.push((item) => typeof item[field] === "string" && item[field].startsWith(val));
+      return "";
+    });
+
+    for (const part of expr.split(/\s+AND\s+/i)) {
+      const trimmed = part.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const inMatch = trimmed.match(/^([\w.]+)\s+IN\s+\(([^)]*)\)$/i);
+      if (inMatch) {
+        const field = inMatch[1];
+        const options = inMatch[2].split(",").map((s) => s.trim());
+
+        clauses.push((item) => options.some((o) => `${item[field]}` === o));
+        continue;
+      }
+      const opMatch = trimmed.match(/^([\w.]+)\s*(<=|>=|<>|=|<|>)\s*(.+)$/);
+      if (opMatch) {
+        const [, field, op, raw] = opMatch;
+        const val = raw.trim();
+        clauses.push((item) => {
+          const actual = field
+            .split(".")
+            .reduce<unknown>(
+              (memo, key) =>
+                memo != null && typeof memo === "object" ? (memo as Record<string, unknown>)[key] : undefined,
+              item
+            );
+          const c = compareValues(actual, val);
+          switch (op) {
+            case "=":
+              return `${actual}` === val;
+            case "<>":
+              return `${actual}` !== val;
+            case "<":
+              return c < 0;
+            case "<=":
+              return c <= 0;
+            case ">":
+              return c > 0;
+            case ">=":
+              return c >= 0;
+            default:
+              return true;
+          }
+        });
+      }
+      // Anything we don't recognize is left as match-all, preserving the mock's historical leniency.
+    }
+
+    return (item) => clauses.every((c) => c(item));
+  }
+
+  public async query<T>(args: {
+    tableName: string;
+    expression: string;
+    filterExpression?: string;
+    indexName?: string;
+    scanIndexForward?: boolean;
+    attrs?: Record<string, string>;
+    values?: Partial<Record<string, string | string[] | number>>;
+    limit?: number;
+  }): Promise<T[]> {
+    let values = ObjectUtils_values(this.data[args.tableName] || {}) as unknown as T[];
+    const keyCondition = this.buildCondition<T>({
+      filterExpression: args.expression,
+      attrs: args.attrs,
+      values: args.values,
+    });
+    const filterCondition = args.filterExpression
+      ? this.buildCondition<T>({ filterExpression: args.filterExpression, attrs: args.attrs, values: args.values })
+      : () => true;
+    values = values.filter((item) => keyCondition(item) && filterCondition(item));
+
+    const sortKey = args.indexName ? indexSortKeys[args.indexName] : tableSortKeys[args.tableName];
+    if (args.scanIndexForward !== undefined && sortKey) {
+      values = [...values].sort((a, b) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c = compareValues((a as any)[sortKey], (b as any)[sortKey]);
+        return args.scanIndexForward ? c : -c;
+      });
+    }
+
+    if (args.limit != null) {
+      values = values.slice(0, args.limit);
+    }
+
+    const projectedAttributes = args.indexName ? userIndexProjectedAttributes[args.indexName] : undefined;
+    if (projectedAttributes) {
+      values = values.map((item) => pickAttributes(item, projectedAttributes));
+    }
+
+    return Promise.resolve(ObjectUtils_clone(values));
+  }
+
+  public async queryPage<T>(args: IDynamoQueryPageArgs): Promise<IDynamoQueryPage<T>> {
+    const keyCondition = this.buildCondition<Record<string, unknown>>({
+      filterExpression: args.expression,
+      attrs: args.attrs,
+      values: args.values,
+    });
+    const keyNames = idKeys[args.tableName] || [];
+    const sortKey = args.indexName ? indexSortKeys[args.indexName] : tableSortKeys[args.tableName];
+    const direction = args.scanIndexForward === false ? -1 : 1;
+    const items = (ObjectUtils_values(this.data[args.tableName] || {}) as Record<string, unknown>[])
+      .filter((item) => keyCondition(item))
+      .sort((a, b) => {
+        const bySort = sortKey ? compareValues(a[sortKey], b[sortKey]) : 0;
+        if (bySort !== 0) {
+          return bySort * direction;
+        }
+        for (const k of keyNames) {
+          const c = compareValues(a[k], b[k]);
+          if (c !== 0) {
+            return c * direction;
+          }
+        }
+        return 0;
+      });
+    const startKey = args.exclusiveStartKey;
+    const startIndex =
+      startKey != null ? items.findIndex((item) => keyNames.every((k) => `${item[k]}` === `${startKey[k]}`)) + 1 : 0;
+    const page = items.slice(startIndex, startIndex + args.limit);
+    const last = page[page.length - 1];
+    const hasMore = startIndex + args.limit < items.length;
+    const lastEvaluatedKey =
+      hasMore && last != null
+        ? Object.fromEntries([...keyNames, ...(sortKey ? [sortKey] : [])].map((k) => [k, last[k]]))
+        : undefined;
+    return { items: ObjectUtils_clone(page) as unknown as T[], lastEvaluatedKey };
+  }
+
+  private matchesCondition(item: Record<string, unknown> | undefined, condition?: IDynamoCondition): boolean {
+    if (condition == null) {
+      return true;
+    }
+    const resolve = (name: string): string => condition.attrs?.[name.trim()] ?? name.trim();
+    let rest = condition.expression;
+    let ok = true;
+    rest = rest.replace(/attribute_not_exists\(\s*([^)]+?)\s*\)/gi, (_m, name: string) => {
+      ok = ok && (item == null || item[resolve(name)] === undefined);
+      return "";
+    });
+    rest = rest.replace(/attribute_exists\(\s*([^)]+?)\s*\)/gi, (_m, name: string) => {
+      ok = ok && item != null && item[resolve(name)] !== undefined;
+      return "";
+    });
+    const remaining = rest
+      .split(/\s+AND\s+/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .join(" AND ");
+    if (!ok) {
+      return false;
+    }
+    if (remaining.length === 0) {
+      return true;
+    }
+    if (item == null) {
+      return false;
+    }
+    return this.buildCondition<Record<string, unknown>>({
+      filterExpression: remaining,
+      attrs: condition.attrs,
+      values: condition.values as Partial<Record<string, string | number>>,
+    })(item);
+  }
+
+  private itemKey(tableName: string, item: Record<string, NativeAttributeValue>): Record<string, NativeAttributeValue> {
+    const keyNames = idKeys[tableName];
+    if (!keyNames) {
+      throw new Error(`MockDynamo: Missing put key mapping for ${tableName}`);
+    }
+    return keyNames.reduce((memo, k) => ({ ...memo, [k]: item[k] }), {});
+  }
+
+  public async transactWrite(args: {
+    puts?: IDynamoTransactPut[];
+    deletes?: IDynamoTransactDelete[];
+  }): Promise<boolean> {
+    for (const put of args.puts || []) {
+      const existing = this.data[put.tableName]?.[this.getKey(this.itemKey(put.tableName, put.item))];
+      if (!this.matchesCondition(existing as Record<string, unknown> | undefined, put.condition)) {
+        return false;
+      }
+    }
+    for (const del of args.deletes || []) {
+      const existing = this.data[del.tableName]?.[this.getKey(del.key)];
+      if (!this.matchesCondition(existing as Record<string, unknown> | undefined, del.condition)) {
+        return false;
+      }
+    }
+    for (const put of args.puts || []) {
+      await this.put({ tableName: put.tableName, item: put.item });
+    }
+    for (const del of args.deletes || []) {
+      delete this.data[del.tableName]?.[this.getKey(del.key)];
+    }
+    return true;
+  }
+
+  public async scan<T>(args: {
+    tableName: string;
+    filterExpression?: string;
+    values?: Partial<Record<string, number | string | string[]>>;
+  }): Promise<T[]> {
+    let values = ObjectUtils_values(this.data[args.tableName] || {}) as T[];
+    if (args.filterExpression) {
+      values = values.filter(this.buildCondition({ filterExpression: args.filterExpression, values: args.values }));
+    }
+    return Promise.resolve(ObjectUtils_clone(values));
+  }
+
+  private getKey(key: Record<string, NativeAttributeValue>): string {
+    const keys = Object.keys(key).sort();
+    return JSON.stringify(key, keys);
+  }
+
+  public async get<T>(args: { tableName: string; key: Record<string, NativeAttributeValue> }): Promise<T | undefined> {
+    const value = this.data[args.tableName]?.[this.getKey(args.key)] as T | undefined;
+    return ObjectUtils_clone(value);
+  }
+
+  public async put(args: { tableName: string; item: Record<string, NativeAttributeValue> }): Promise<void> {
+    this.write(args);
+  }
+
+  public async putReturningOld(args: {
+    tableName: string;
+    item: Record<string, NativeAttributeValue>;
+  }): Promise<Record<string, NativeAttributeValue> | undefined> {
+    return this.write(args);
+  }
+
+  private write(args: {
+    tableName: string;
+    item: Record<string, NativeAttributeValue>;
+  }): Record<string, NativeAttributeValue> | undefined {
+    const keyNames = idKeys[args.tableName];
+    if (keyNames) {
+      const key = keyNames.reduce((memo, k) => ({ ...memo, [k]: args.item[k] }), {});
+      this.data[args.tableName] = this.data[args.tableName] || {};
+      const storeKey = this.getKey(key);
+      const old = this.data[args.tableName][storeKey];
+      this.data[args.tableName][storeKey] = args.item;
+      return old != null ? ObjectUtils_clone(old as Record<string, NativeAttributeValue>) : undefined;
+    } else {
+      throw new Error(`MockDynamo: Missing put key mapping for ${args.tableName}`);
+    }
+  }
+
+  public putIfNotExists(args: {
+    tableName: string;
+    item: Record<string, NativeAttributeValue>;
+    partitionKey: string;
+    sortKey?: string;
+  }): Promise<boolean> {
+    const keyNames = idKeys[args.tableName];
+    if (keyNames) {
+      const key = keyNames.reduce((memo, k) => ({ ...memo, [k]: args.item[k] }), {});
+      this.data[args.tableName] = this.data[args.tableName] || {};
+      this.data[args.tableName][this.getKey(key)] = args.item;
+      return Promise.resolve(true);
+    } else {
+      throw new Error(`MockDynamo: Missing put key mapping for ${args.tableName}`);
+    }
+  }
+
+  public async update(args: {
+    tableName: string;
+    key: Record<string, NativeAttributeValue>;
+    expression: string;
+    attrs?: Record<string, string>;
+    values?: Partial<Record<string, unknown>>;
+    returnValues?: "ALL_NEW" | "UPDATED_NEW";
+  }): Promise<Record<string, NativeAttributeValue> | undefined> {
+    const tableData = (this.data[args.tableName] = this.data[args.tableName] || {});
+    const storeKey = this.getKey(args.key);
+    const item: Record<string, unknown> = { ...args.key, ...((tableData[storeKey] as Record<string, unknown>) || {}) };
+    const resolveName = (n: string): string => args.attrs?.[n.trim()] ?? n.trim();
+    const resolveVal = (v: string): unknown => (args.values ? args.values[v.trim()] : undefined);
+
+    // Split on top-level commas only, so commas inside if_not_exists(a, b) don't split
+    const splitClauses = (s: string): string[] => {
+      const parts: string[] = [];
+      let depth = 0;
+      let current = "";
+      for (const ch of s) {
+        if (ch === "(") {
+          depth += 1;
+        } else if (ch === ")") {
+          depth -= 1;
+        }
+        if (ch === "," && depth === 0) {
+          parts.push(current);
+          current = "";
+        } else {
+          current += ch;
+        }
+      }
+      if (current.trim()) {
+        parts.push(current);
+      }
+      return parts;
+    };
+
+    const addMatch = args.expression.match(/ADD\s+(.+?)(?:\s+SET\s+|$)/i);
+    if (addMatch) {
+      for (const part of splitClauses(addMatch[1])) {
+        const [nameTok, valTok] = part.trim().split(/\s+/);
+        const name = resolveName(nameTok);
+        item[name] = (Number(item[name]) || 0) + (Number(resolveVal(valTok)) || 0);
+      }
+    }
+    const setMatch = args.expression.match(/SET\s+(.+?)(?:\s+ADD\s+|$)/i);
+    if (setMatch) {
+      for (const part of splitClauses(setMatch[1])) {
+        const m = part.trim().match(/^(\S+)\s*=\s*(.+)$/);
+        if (!m) {
+          continue;
+        }
+        const name = resolveName(m[1]);
+        const ifne = m[2].trim().match(/^if_not_exists\(\s*(\S+)\s*,\s*(\S+)\s*\)$/i);
+        if (ifne) {
+          if (item[resolveName(ifne[1])] === undefined) {
+            item[name] = resolveVal(ifne[2]);
+          }
+        } else {
+          item[name] = resolveVal(m[2]);
+        }
+      }
+    }
+    tableData[storeKey] = item;
+    return args.returnValues ? (ObjectUtils_clone(item) as Record<string, NativeAttributeValue>) : undefined;
+  }
+
+  public async remove(args: {
+    tableName: string;
+    key: Record<string, NativeAttributeValue>;
+    condition?: IDynamoCondition;
+  }): Promise<boolean> {
+    const key = this.getKey(args.key);
+    const item = this.data[args.tableName]?.[key];
+    if (item != null && args.condition != null) {
+      const matches = this.buildCondition({
+        filterExpression: args.condition.expression,
+        attrs: args.condition.attrs,
+        values: args.condition.values,
+      });
+      if (!matches(item)) {
+        return false;
+      }
+    }
+    delete this.data[args.tableName]?.[key];
+    return true;
+  }
+
+  public async batchGet<T>(args: {
+    tableName: string;
+    keys: Record<string, NativeAttributeValue>[];
+    consistentRead?: boolean;
+  }): Promise<T[]> {
+    return CollectionUtils_compact(
+      await Promise.all(args.keys.map((key) => this.get<T>({ tableName: args.tableName, key })))
+    );
+  }
+  public async batchDelete(args: { tableName: string; keys: Record<string, NativeAttributeValue>[] }): Promise<void> {
+    for (const key of args.keys) {
+      await this.remove({ tableName: args.tableName, key });
+    }
+  }
+  public async batchPut(args: { tableName: string; items: Record<string, NativeAttributeValue>[] }): Promise<void> {
+    for (const item of args.items) {
+      await this.put({ tableName: args.tableName, item });
+    }
+  }
+
+  public async *streamingQuery<T>(args: {
+    tableName: string;
+    expression: string;
+    filterExpression?: string;
+    indexName?: string;
+    scanIndexForward?: boolean;
+    attrs?: Record<string, string>;
+    values?: Partial<Record<string, string | string[] | number | number[]>>;
+    limit?: number;
+  }): AsyncGenerator<T[], void, unknown> {
+    const values = ObjectUtils_values(this.data[args.tableName] || {}) as unknown as T[];
+    const filteredValues = values.filter(
+      this.buildCondition({ filterExpression: args.expression, attrs: args.attrs, values: args.values })
+    );
+    if (args.limit) {
+      yield Promise.resolve(filteredValues.slice(0, args.limit));
+    } else {
+      yield Promise.resolve(filteredValues);
+    }
+  }
+
+  public async *streamingScan<T>(args: {
+    tableName: string;
+    filterExpression?: string;
+    values?: Partial<Record<string, number | string | string[]>>;
+    limit?: number;
+  }): AsyncGenerator<T[], void, unknown> {
+    let values = ObjectUtils_values(this.data[args.tableName] || {}) as T[];
+    if (args.filterExpression) {
+      values = values.filter(this.buildCondition({ filterExpression: args.filterExpression, values: args.values }));
+    }
+    if (args.limit) {
+      yield Promise.resolve(values.slice(0, args.limit));
+    } else {
+      yield Promise.resolve(values);
+    }
+  }
+}

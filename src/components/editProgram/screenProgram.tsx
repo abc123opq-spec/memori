@@ -1,0 +1,681 @@
+import { JSX, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { View, ScrollView, Platform } from "react-native";
+import { Pressable } from "../primitives/pressable";
+import { Text } from "../primitives/text";
+import { IDispatch } from "../../ducks/types";
+import { INavCommon, IState, updateState } from "../../models/state";
+import { IProgram, ISettings } from "../../types";
+import { useNavOptions } from "../../navigation/useNavOptions";
+import { ILensDispatch } from "../../utils/useLensReducer";
+import { ILensRecordingPayload, lb } from "lens-shmens";
+import { IPlannerState } from "../../pages/planner/models/types";
+import { undoRedoMiddleware, useUndoRedo } from "../../pages/builder/utils/undoredo";
+import {
+  IEvaluatedProgram,
+  Program_evaluate,
+  Program_dayAverageTimeMs,
+  Program_daysAndExercises,
+  Program_getDayName,
+} from "../../models/program";
+import { StringUtils_dashcase } from "../../utils/string";
+import { IconCalendarSmall } from "../icons/iconCalendarSmall";
+import { TimeUtils_formatHOrMin } from "../../utils/time";
+import { Translate_format, Translate_text } from "../../i18n/translate";
+import { IconTimerSmall } from "../icons/iconTimerSmall";
+import { EditProgram_setName, EditProgram_tabLabels, EditProgram_mode } from "../../models/editProgram";
+import { EditProgramNavbar, EditProgramView } from "./editProgram";
+import { ProgramPreviewPlayground } from "../preview/programPreviewPlayground";
+import { Thunk_pushScreen, Thunk_log } from "../../ducks/thunks";
+import {
+  IProgramEditLine,
+  SocialState_programEditLine,
+  SocialState_unseenEditsInOtherPrograms,
+} from "../../models/socialState";
+import { Thunk_loadProgramEdits } from "../../ducks/socialThunks";
+import { PlannerDispatch_logEditAction } from "../../utils/plannerDispatch";
+import { IconSwap } from "../icons/iconSwap";
+import { ContentGrowingTextarea } from "../contentGrowingTextarea";
+import { LinkButton } from "../linkButton";
+import { PlannerProgram_evaluate } from "../../pages/planner/models/plannerProgram";
+import { IconKebab } from "../icons/iconKebab";
+import { UidFactory_generateUid } from "../../utils/generator";
+import { useIsFocused } from "@react-navigation/native";
+import { navigateToModal, getCurrentRouteName } from "../../navigation/navigationService";
+import { ProgramPreviewWeekContent } from "../preview/programPreviewTab";
+import { ProgramPreviewWeeks_build } from "../preview/programPreviewWeeks";
+import { Nux } from "../nux";
+import { programTourConfig } from "../tour/programTourConfig";
+import { NavScreenContent } from "../../navigation/NavScreenContent";
+import { LiftoEditorFocusProvider } from "../liftoEditorFocus";
+import { LiftoEditorDock } from "../liftoEditorDock";
+import { GridSelectionProvider } from "./editProgramGrid/gridSelectionContext";
+import { GridActionDock } from "./editProgramGrid/gridActionDock";
+import { Tailwind_semantic } from "../../utils/tailwindConfig";
+import { useTimedMemo } from "../../utils/useTimedMemo";
+import { usePerfRenderCount } from "../../utils/usePerfRenderCount";
+import { usePerfRenderTrace } from "../../utils/usePerfRenderTrace";
+import { PerfTracker_recordEvent, PerfTracker_getSessionId } from "../../utils/perfTracker";
+import { PerfEnabled_tier2 } from "../../utils/perfEnabled";
+import { PerfProfiler } from "../../utils/perfProfiler";
+import { HermesProfile_captureOnce } from "../../utils/hermesProfile";
+import { ProgramGuideEntry } from "../programGuideEntry";
+
+function onProfile(
+  id: string,
+  phase: "mount" | "update" | "nested-update",
+  actualDuration: number,
+  baseDuration: number
+): void {
+  if (!PerfEnabled_tier2()) {
+    return;
+  }
+  if (actualDuration < 1) {
+    return;
+  }
+  PerfTracker_recordEvent({
+    type: "profile",
+    session: PerfTracker_getSessionId(),
+    id,
+    phase,
+    actual_ms: actualDuration,
+    base_ms: baseDuration,
+    ts: Date.now(),
+  });
+}
+
+const TAB_LABELS = EditProgram_tabLabels;
+const EDIT_TAB_INDEX = TAB_LABELS.indexOf("Edit");
+const EMPTY_EVAL: ReturnType<typeof PlannerProgram_evaluate> = { evaluatedWeeks: [], exerciseFullNames: [] };
+const TAB_LABELS_RO: readonly string[] = TAB_LABELS;
+const PLAYGROUND_TABS_PROPS = {
+  topPadding: "0.25rem",
+  className: "gap-2 px-4",
+  type: "squares",
+} as const;
+
+interface IProps {
+  originalProgram: IProgram;
+  plannerState: IPlannerState;
+  helps: string[];
+  client: Window["fetch"];
+  dispatch: IDispatch;
+  settings: ISettings;
+  isLoggedIn: boolean;
+  revisions: string[];
+  navCommon: INavCommon;
+}
+
+export const ScreenProgram = memo(function ScreenProgram(props: IProps): JSX.Element {
+  usePerfRenderCount("ScreenProgram");
+  usePerfRenderTrace("ScreenProgram");
+  const plannerState = props.plannerState;
+  const dispatch = props.dispatch;
+  const programId = props.originalProgram.id;
+
+  const plannerStateRef = useRef(plannerState);
+  plannerStateRef.current = plannerState;
+  const loggedOnceRef = useRef<Set<string>>(new Set());
+
+  const lbBuilder = useMemo(() => lb<IState>().p("editProgramStates").p(programId), [programId]);
+
+  const plannerDispatch = useMemo<ILensDispatch<IPlannerState>>(() => {
+    const fn: ILensDispatch<IPlannerState> = (lensRecording, desc) => {
+      const recordings = Array.isArray(lensRecording)
+        ? (lensRecording as ILensRecordingPayload<IPlannerState>[])
+        : [lensRecording as ILensRecordingPayload<IPlannerState>];
+      updateState(
+        dispatch,
+        recordings.map((r) => r.prepend(lbBuilder)),
+        desc || "Update state"
+      );
+      PlannerDispatch_logEditAction(dispatch, desc, loggedOnceRef.current);
+      const changesCurrent = recordings.some((r) => r.lens.from.some((f) => f === "current"));
+      const current = plannerStateRef.current;
+      if (desc !== "undo" && changesCurrent && current != null) {
+        undoRedoMiddleware(fn, current);
+      }
+    };
+    return fn;
+  }, [dispatch, lbBuilder]);
+
+  useUndoRedo(plannerState, plannerDispatch);
+
+  useEffect(() => {
+    dispatch(Thunk_log("ls-program-open"));
+  }, [dispatch]);
+
+  const program: IProgram = plannerState.current.program;
+  const planner = program.planner!;
+  const evaluatedProgram = useTimedMemo(
+    "editProgram.evaluatedProgram",
+    () => Program_evaluate(program, props.settings),
+    [program, props.settings]
+  );
+  const ui = plannerState.ui;
+  const mode = EditProgram_mode(ui);
+
+  useLayoutEffect(() => {
+    for (const week of planner.weeks) {
+      week.id = week.id ?? UidFactory_generateUid(8);
+      for (const day of week.days) {
+        day.id = day.id ?? UidFactory_generateUid(8);
+      }
+    }
+  }, [planner]);
+
+  const exercisePickerUi = props.plannerState.ui.exercisePicker;
+  // Open the picker modal whenever a request is set but the picker isn't actually
+  // open. The route check makes this a no-op while the picker is up (so `.state`
+  // mutations don't re-push), but lets us re-open if a navigation was dropped.
+  const openPickerIfNeeded = useCallback(() => {
+    const picker = plannerStateRef.current.ui.exercisePicker;
+    if (!picker || getCurrentRouteName() === "editProgramExercisePickerModal") {
+      return;
+    }
+    navigateToModal("editProgramExercisePickerModal", {
+      programId,
+      dayData: picker.dayData,
+      change: picker.change,
+      exerciseKey: picker.exerciseKey,
+    });
+  }, [programId]);
+  const navigatedPickerRef = useRef(exercisePickerUi);
+  useEffect(() => {
+    if (exercisePickerUi && navigatedPickerRef.current !== exercisePickerUi) {
+      dispatch(Thunk_log("ls-program-exercise-picker"));
+      openPickerIfNeeded();
+    }
+    navigatedPickerRef.current = exercisePickerUi;
+  }, [dispatch, exercisePickerUi, openPickerIfNeeded]);
+  // Recover a dropped navigation: when this screen regains focus (e.g. a competing
+  // modal that stole the navigation closed) and a picker request is still pending,
+  // re-assert it instead of waiting for the user to tap again.
+  const isFocused = useIsFocused();
+  useEffect(() => {
+    if (isFocused) {
+      openPickerIfNeeded();
+    }
+  }, [isFocused, openPickerIfNeeded]);
+  useEffect(() => {
+    if (isFocused) {
+      dispatch(Thunk_loadProgramEdits());
+    }
+  }, [isFocused, dispatch]);
+
+  const navRightButtons = useMemo(
+    () => [
+      <Pressable
+        key="kebab"
+        data-testid="navbar-3-dot"
+        testID="navbar-3-dot"
+        className="p-2 nm-edit-program-v2-navbar-kebab"
+        onPress={() => navigateToModal("editProgramMenuModal", { programId })}
+      >
+        <IconKebab />
+      </Pressable>,
+    ],
+    [programId]
+  );
+
+  const navOptions = useMemo(
+    () => ({
+      navTitle: "Program",
+      navHelpTourId: programTourConfig.id,
+      navRightButtons,
+    }),
+    [navRightButtons]
+  );
+  useNavOptions(navOptions);
+
+  // Preview and Playground both render the evaluated program, so a program that failed to
+  // evaluate shows up there as a week of empty days with no hint of why. Pin the screen to
+  // Edit, the only tab that surfaces the syntax errors.
+  const hasEvalErrors = evaluatedProgram.errors.length > 0;
+  const tabIndex = hasEvalErrors ? EDIT_TAB_INDEX : (plannerState.ui.tabIndex ?? 0);
+  const activeTabLabel = TAB_LABELS[tabIndex] ?? "Preview";
+
+  // Also write the redirect through, so fixing the program leaves the user in the editor
+  // instead of yanking them back to Preview - the text they're typing passes through valid
+  // states on the way to the one they mean.
+  useEffect(() => {
+    if (!hasEvalErrors) {
+      return;
+    }
+    const recordings = [];
+    if ((ui.tabIndex ?? 0) !== EDIT_TAB_INDEX) {
+      recordings.push(lb<IPlannerState>().p("ui").p("tabIndex").record(EDIT_TAB_INDEX));
+    }
+    // The grid has nowhere to render an error, and the navbar already refuses to enter it while
+    // the program is broken.
+    if (mode === "grid") {
+      recordings.push(lb<IPlannerState>().p("ui").p("mode").record("ui"));
+    }
+    if (recordings.length > 0) {
+      plannerDispatch(recordings, "Fall through to editing an invalid program");
+    }
+  }, [hasEvalErrors, ui.tabIndex, mode, plannerDispatch]);
+
+  const plannerEval = useTimedMemo(
+    "editProgram.plannerEval",
+    () => (activeTabLabel === "Edit" ? PlannerProgram_evaluate(planner, props.settings) : EMPTY_EVAL),
+    [activeTabLabel, planner, props.settings]
+  );
+  const { evaluatedWeeks, exerciseFullNames } = plannerEval;
+
+  const onChangeTab = useCallback(
+    (newTabIndex: number): void => {
+      const tabLabel = TAB_LABELS[newTabIndex];
+      if (tabLabel) {
+        dispatch(Thunk_log(`ls-program-tab-${tabLabel.toLowerCase()}`));
+        HermesProfile_captureOnce(`program-tab-${tabLabel.toLowerCase()}`, 3000);
+      }
+      plannerDispatch(lb<IPlannerState>().p("ui").p("tabIndex").record(newTabIndex), "Change tab");
+    },
+    [dispatch, plannerDispatch]
+  );
+
+  const [previewWeekIndex, setPreviewWeekIndex] = useState(0);
+  const [playgroundWeekIndex, setPlaygroundWeekIndex] = useState(0);
+  const editWeekIndex = Math.min(ui.weekIndex ?? 0, Math.max(0, planner.weeks.length - 1));
+  const setEditWeekIndex = useCallback(
+    (newIndex: number): void => {
+      plannerDispatch(lb<IPlannerState>().p("ui").p("weekIndex").record(newIndex), `Change week index to ${newIndex}`);
+    },
+    [plannerDispatch]
+  );
+
+  const previewWeekLabels = useMemo(
+    () => (activeTabLabel === "Preview" ? evaluatedProgram.weeks.map((w) => w.name) : []),
+    [activeTabLabel, evaluatedProgram]
+  );
+  const safePreviewWeekIndex = Math.min(previewWeekIndex, Math.max(0, previewWeekLabels.length - 1));
+  const previewWeek = useTimedMemo(
+    "editProgram.previewWeek",
+    () =>
+      activeTabLabel === "Preview"
+        ? ProgramPreviewWeeks_build(program, props.settings, props.navCommon.stats, safePreviewWeekIndex)
+        : undefined,
+    [activeTabLabel, program, props.settings, props.navCommon.stats, safePreviewWeekIndex]
+  );
+  const playgroundWeekNames = useMemo(
+    () => (activeTabLabel === "Playground" ? evaluatedProgram.weeks.map((w) => w.name) : []),
+    [activeTabLabel, evaluatedProgram]
+  );
+  const safePlaygroundWeekIndex = Math.min(playgroundWeekIndex, Math.max(0, playgroundWeekNames.length - 1));
+  const showEditWeekTabBar =
+    activeTabLabel === "Edit" && (mode === "ui" || mode === "perday") && planner.weeks.length > 1;
+
+  const onChangeProgram = useCallback(() => {
+    dispatch(Thunk_pushScreen("programs"));
+  }, [dispatch]);
+  const programEdits = props.navCommon.programEdits;
+  const friendEditLine = useMemo(
+    () => SocialState_programEditLine(programEdits, programId, Date.now()),
+    [programEdits, programId]
+  );
+  const hasOtherProgramEdits = SocialState_unseenEditsInOtherPrograms(programEdits, programId) > 0;
+  const onOpenFriendEdits = useCallback(() => {
+    dispatch(Thunk_pushScreen("programEdits", { programId }));
+  }, [dispatch, programId]);
+  const onChangeDay = useCallback(() => {
+    navigateToModal("programNextDayModal", { programId });
+  }, [programId]);
+  const onChangeName = useCallback(
+    (newValue: string) => {
+      EditProgram_setName(dispatch, props.originalProgram, newValue);
+      plannerDispatch(
+        [
+          lb<IPlannerState>().p("current").p("program").p("name").record(newValue),
+          lb<IPlannerState>().p("current").p("program").pi("planner").p("name").record(newValue),
+        ],
+        "Update program name"
+      );
+    },
+    [dispatch, plannerDispatch, props.originalProgram]
+  );
+
+  let tabContent: JSX.Element;
+  if (activeTabLabel === "Preview") {
+    tabContent = previewWeek ? (
+      <PerfProfiler id="tab.Preview" onRender={onProfile}>
+        <ProgramPreviewWeekContent
+          key="preview"
+          week={previewWeek}
+          weekIndex={safePreviewWeekIndex}
+          program={program}
+          programId={programId}
+          settings={props.settings}
+          ui={ui}
+          stats={props.navCommon.stats}
+          dispatch={dispatch}
+          plannerDispatch={plannerDispatch}
+          totalWeeks={previewWeekLabels.length}
+        />
+      </PerfProfiler>
+    ) : (
+      <View />
+    );
+  } else if (activeTabLabel === "Edit") {
+    tabContent = (
+      <PerfProfiler id="tab.Edit" onRender={onProfile}>
+        <EditProgramView
+          hideNavbar
+          hideWeekTabBar={showEditWeekTabBar}
+          evaluatedWeeks={evaluatedWeeks}
+          evaluatedProgram={evaluatedProgram}
+          exerciseFullNames={exerciseFullNames}
+          dispatch={dispatch}
+          originalProgram={props.originalProgram}
+          programId={programId}
+          settings={props.settings}
+          plannerDispatch={plannerDispatch}
+          state={plannerState}
+        />
+      </PerfProfiler>
+    );
+  } else {
+    tabContent = (
+      <PerfProfiler id="tab.Playground" onRender={onProfile}>
+        <View className="pb-4">
+          <Nux className="mx-4 my-2" id="Playground" helps={props.helps} dispatch={dispatch}>
+            <Text className="text-xs">
+              Playground lets you test the program logic. You can finish workouts here and see how reps, weights, sets
+              change. Everything you do here is ephemeral, and doesn't change any settings, workouts or programs.
+            </Text>
+          </Nux>
+          <ProgramPreviewPlayground
+            key="playground"
+            scrollableTabsProps={PLAYGROUND_TABS_PROPS}
+            isPlayground={true}
+            program={program}
+            settings={props.settings}
+            stats={props.navCommon.stats}
+            useNavModals={true}
+            hideWeekTabBar={true}
+            externalWeekIndex={safePlaygroundWeekIndex}
+          />
+        </View>
+      </PerfProfiler>
+    );
+  }
+
+  const editWeekLabels = useMemo(() => planner.weeks.map((w) => w.name), [planner.weeks]);
+  const editWeekInvalidIndices = useMemo(
+    () => planner.weeks.map((_, i) => evaluatedWeeks[i]?.some((day) => !day.success) ?? false),
+    [planner.weeks, evaluatedWeeks]
+  );
+
+  let perTabStickyHeader: JSX.Element;
+  if (activeTabLabel === "Edit") {
+    perTabStickyHeader = (
+      <View className="bg-background-default">
+        <EditProgramNavbar
+          dispatch={dispatch}
+          originalProgram={props.originalProgram}
+          settings={props.settings}
+          state={plannerState}
+          evaluatedWeeks={evaluatedWeeks}
+          plannerDispatch={plannerDispatch}
+        />
+        {showEditWeekTabBar && (
+          <WeekTabBar
+            labels={editWeekLabels}
+            invalidIndices={editWeekInvalidIndices}
+            activeIndex={editWeekIndex}
+            onChange={setEditWeekIndex}
+          />
+        )}
+      </View>
+    );
+  } else if (activeTabLabel === "Preview" && previewWeekLabels.length > 1) {
+    perTabStickyHeader = (
+      <View className="bg-background-default">
+        <WeekTabBar labels={previewWeekLabels} activeIndex={safePreviewWeekIndex} onChange={setPreviewWeekIndex} />
+      </View>
+    );
+  } else if (activeTabLabel === "Playground" && playgroundWeekNames.length > 1) {
+    perTabStickyHeader = (
+      <View className="bg-background-default">
+        <WeekTabBar
+          labels={playgroundWeekNames}
+          activeIndex={safePlaygroundWeekIndex}
+          onChange={setPlaygroundWeekIndex}
+        />
+      </View>
+    );
+  } else {
+    perTabStickyHeader = <View className="bg-background-default" />;
+  }
+
+  const showEditorDock = activeTabLabel === "Edit" && (mode === "perday" || mode === "full");
+  const showGridDock = activeTabLabel === "Edit" && mode === "grid";
+
+  return (
+    <PerfProfiler id="ScreenProgram.shell" onRender={onProfile}>
+      <LiftoEditorFocusProvider>
+        <GridSelectionProvider>
+          <NavScreenContent
+            stickyHeaderIndices={STICKY_INDICES}
+            footer={showEditorDock ? <LiftoEditorDock /> : showGridDock ? <GridActionDock /> : undefined}
+            // Freeform editing hides the dock, so dragging is how the keyboard goes away on
+            // iOS; Android also has the back button.
+            keyboardDismissMode={showEditorDock ? (Platform.OS === "ios" ? "interactive" : "on-drag") : undefined}
+            // Freeform raises the system keyboard over a day editor that can sit at the very
+            // bottom of the list, and the reveal can only scroll as far as the content allows.
+            avoidSystemKeyboard={showEditorDock}
+          >
+            <PerfProfiler id="ScreenProgram.header" onRender={onProfile}>
+              <EditProgramHeader
+                program={props.originalProgram}
+                evaluatedProgram={evaluatedProgram}
+                settings={props.settings}
+                onChangeProgram={onChangeProgram}
+                onChangeDay={onChangeDay}
+                onChangeName={onChangeName}
+                friendEditLine={friendEditLine}
+                hasOtherProgramEdits={hasOtherProgramEdits}
+                onOpenFriendEdits={onOpenFriendEdits}
+              />
+            </PerfProfiler>
+            <OuterTabBar
+              labels={TAB_LABELS_RO}
+              activeIndex={tabIndex}
+              pinnedIndex={hasEvalErrors ? EDIT_TAB_INDEX : undefined}
+              onChange={onChangeTab}
+            />
+            <PerfProfiler id="ScreenProgram.stickyHeader" onRender={onProfile}>
+              {perTabStickyHeader}
+            </PerfProfiler>
+            {tabContent}
+          </NavScreenContent>
+        </GridSelectionProvider>
+      </LiftoEditorFocusProvider>
+    </PerfProfiler>
+  );
+});
+
+const STICKY_INDICES = [1, 2];
+
+interface IWeekTabBarProps {
+  labels: string[];
+  activeIndex: number;
+  invalidIndices?: boolean[];
+  onChange: (index: number) => void;
+}
+
+const WeekTabBar = memo(function WeekTabBar(props: IWeekTabBarProps): JSX.Element {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} className="bg-background-default">
+      <View className="flex-row gap-2 px-gutter py-2">
+        {props.labels.map((label, index) => {
+          const isSelected = props.activeIndex === index;
+          const isInvalid = props.invalidIndices?.[index] ?? false;
+          return (
+            <Pressable
+              key={`${label}-${index}`}
+              testID={`tab-${StringUtils_dashcase(label.toLowerCase())}`}
+              data-testid={`tab-${StringUtils_dashcase(label.toLowerCase())}`}
+              className={`px-3 py-2 rounded mr-2 ${
+                isSelected
+                  ? "bg-background-default border border-button-primarybackground"
+                  : "bg-background-subtle border border-background-default"
+              }`}
+              onPress={() => props.onChange(index)}
+            >
+              <Text className={`text-sm ${isSelected ? "text-text-purple" : "text-text-secondary"}`}>
+                {isInvalid ? "⚠️ " : ""}
+                {label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+});
+
+interface IOuterTabBarProps {
+  labels: readonly string[];
+  activeIndex: number;
+  // Set while the program can't be evaluated: this tab is flagged as the one holding the
+  // errors, and the rest - which would render an empty program - are dimmed and inert.
+  pinnedIndex?: number;
+  onChange: (index: number) => void;
+}
+
+const OuterTabBar = memo(function OuterTabBar(props: IOuterTabBarProps): JSX.Element {
+  const activeColor = Tailwind_semantic().button.secondarystroke;
+  return (
+    <View className="flex-row justify-between pt-4 px-4 bg-background-default border-b border-border-neutral">
+      {props.labels.map((label, index) => {
+        const isSelected = props.activeIndex === index;
+        const isPinned = props.pinnedIndex === index;
+        const isDisabled = props.pinnedIndex != null && !isPinned;
+        const nameClass = `tab-${StringUtils_dashcase(label.toLowerCase())}`;
+        return (
+          <Pressable
+            key={label}
+            className="px-2 pb-1"
+            data-testid={nameClass}
+            testID={nameClass}
+            style={{
+              opacity: isDisabled ? 0.4 : 1,
+              ...(isSelected ? { borderBottomWidth: 2, borderBottomColor: activeColor } : {}),
+            }}
+            onPress={() => {
+              if (!isDisabled) {
+                props.onChange(index);
+              }
+            }}
+          >
+            <Text className={`text-base ${isSelected ? "text-text-purple" : ""}`}>
+              {isPinned ? "⚠️ " : ""}
+              {label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+});
+
+interface IEditProgramHeaderProps {
+  program: IProgram;
+  evaluatedProgram: IEvaluatedProgram;
+  onChangeProgram: () => void;
+  onChangeDay: () => void;
+  onChangeName: (newValue: string) => void;
+  settings: ISettings;
+  friendEditLine?: IProgramEditLine;
+  hasOtherProgramEdits: boolean;
+  onOpenFriendEdits: () => void;
+}
+
+const EditProgramHeader = memo(function EditProgramHeader(props: IEditProgramHeaderProps): JSX.Element {
+  const evaluatedProgram = props.evaluatedProgram;
+  const time = Program_dayAverageTimeMs(evaluatedProgram, props.settings);
+  const duration = TimeUtils_formatHOrMin(time);
+  return (
+    <View className="px-gutter">
+      <View className="flex-row items-center gap-2">
+        <View className="flex-1">
+          <ContentGrowingTextarea
+            className="text-base font-bold"
+            value={evaluatedProgram.name}
+            onInput={(newValue) => {
+              if (newValue) {
+                props.onChangeName(newValue);
+              }
+            }}
+          />
+        </View>
+        <View className="flex-row items-center">
+          <Pressable
+            className="px-2"
+            testID="change-program"
+            data-testid="change-program"
+            onPress={() => {
+              props.onChangeProgram();
+            }}
+          >
+            <IconSwap size={16} />
+            {props.hasOtherProgramEdits && (
+              <View
+                testID="change-program-edits-dot"
+                className="absolute top-0 w-2 h-2 rounded-full right-1 bg-background-error"
+              />
+            )}
+          </Pressable>
+        </View>
+      </View>
+      <View>
+        <View className="flex-row items-center my-1">
+          <IconCalendarSmall className="mr-1" />
+          <Text className="text-xs text-text-secondary">{Program_daysAndExercises(evaluatedProgram)}</Text>
+        </View>
+        <View className="flex-row items-center">
+          <View>
+            <IconTimerSmall />
+          </View>
+          <Text className="pl-1 text-xs text-text-secondary">
+            {Translate_format("{value} {unit}", {
+              value: duration.value,
+              unit: Translate_text(duration.unit, "duration"),
+            })}
+          </Text>
+        </View>
+      </View>
+      <View className="flex-row items-center mt-1">
+        <Text className="text-xs font-bold text-text-secondary">Next Day: </Text>
+        <LinkButton
+          data-testid="change-program-day"
+          testID="change-program-day"
+          name="change-program-day"
+          className="text-xs font-bold"
+          onClick={() => props.onChangeDay()}
+        >
+          {Program_getDayName(evaluatedProgram, evaluatedProgram.nextDay)}
+        </LinkButton>
+      </View>
+      <ProgramGuideEntry program={props.program} testID="program-screen-guide-open" label="Read description" />
+      {props.friendEditLine && (
+        <Pressable
+          className="flex-row items-center mt-1"
+          data-testid="program-friend-edits"
+          testID="program-friend-edits"
+          onPress={props.onOpenFriendEdits}
+        >
+          {props.friendEditLine.isUnseen && <View className="w-2 h-2 mr-1 rounded-full bg-background-error" />}
+          <Text className={friendEditLineClassName[props.friendEditLine.isUnseen ? "unseen" : "seen"]}>
+            {props.friendEditLine.text} ›
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+});
+
+const friendEditLineClassName = {
+  unseen: "text-xs font-bold text-text-link",
+  seen: "text-xs text-text-link",
+};

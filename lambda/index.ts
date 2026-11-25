@@ -1,0 +1,5148 @@
+import "source-map-support/register";
+import * as fs from "fs";
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import { Endpoint, Method, Router, RouteHandler } from "yatro";
+import { GoogleAuthTokenDao } from "./dao/googleAuthTokenDao";
+import { UserDao, ILimitedUserDao, IUserDao } from "./dao/userDao";
+import { EmailAuthTokenDao } from "./dao/emailAuthTokenDao";
+import { PasswordHash_hash, PasswordHash_verify } from "./utils/passwordHash";
+import { renderResetPasswordHtml } from "./resetPassword";
+import { renderVerifyEmailHtml } from "./verifyEmail";
+import { ApiKeyDao } from "./dao/apiKeyDao";
+import {
+  PushSync_notify,
+  PushSync_register,
+  PushSync_unregister,
+  PushSync_validateRegistration,
+} from "./utils/pushSync";
+import { DirtySyncRead_args } from "./utils/dirtySyncRead";
+import { FollowInviteDao } from "./dao/followInviteDao";
+import { FollowDao } from "./dao/followDao";
+import { ReactionDao } from "./dao/reactionDao";
+import { HistoryRecordsDao } from "./dao/historyRecordDao";
+import {
+  Follows_approve,
+  Follows_load,
+  Follows_currentProgramNames,
+  Follows_newRequestId,
+  Follows_removeRequest,
+  Follows_setPermissions,
+  IFollowsError,
+} from "./utils/follows";
+import { Feed_load, Feed_summarizeReactions } from "./utils/feed";
+import {
+  FriendPrograms_editorContext,
+  FriendPrograms_get,
+  FriendPrograms_list,
+  FriendPrograms_cards,
+  FriendPrograms_listEdits,
+  FriendPrograms_listEditsFor,
+  FriendPrograms_markEditsSeen,
+  FriendPrograms_update,
+} from "./utils/friendPrograms";
+import type { IApiError } from "./utils/apiv1";
+import { FollowAccess_canReact } from "./utils/followAccess";
+import { FollowInvitePage_html } from "./followInvitePage";
+import {
+  Follow_defaultPermissions,
+  Follow_displayName,
+  Follow_parsePermissions,
+  Follow_parsePermissionsPatch,
+} from "../src/models/follow";
+import { FriendsWeb_rows, IFriendsPageData } from "../src/models/friendsWeb";
+import { renderFriendsPageHtml } from "./friendsWeb";
+import { IReactionSummary, Reactions_isReaction } from "../src/models/reactions";
+import { FeedWorkout_key } from "../src/models/feedWorkout";
+import { RecordShare_settingsWithoutNotes, RecordShare_withoutNotes } from "../src/models/recordShare";
+import { SyncAccountGuard_decide } from "./utils/syncAccountGuard";
+import { HistoryIds_parse } from "../src/utils/historyIds";
+import * as Cookie from "cookie";
+import JWT from "jsonwebtoken";
+import { UidFactory_generateUid } from "./utils/generator";
+import { Utils_getEnv, Utils_isLocal } from "./utils";
+import { ApplePromotionalOfferSigner } from "./utils/applePromotionalOfferSigner";
+import rsaPemFromModExp from "rsa-pem-from-mod-exp";
+import { IHistoryRecord, IPartialStorage, IStorage, VDeletedSettingsKeys, VWebEditorSettings } from "../src/types";
+import { InboundSocial_loadBounded } from "./utils/inboundSocial";
+import { InboundSocial_parseRequest } from "../src/models/inboundSocial";
+import {
+  FriendPush_followApproved,
+  FriendPush_followRequested,
+  FriendPush_reactionAdded,
+  FriendPush_reactionRemoved,
+  FriendPush_send,
+} from "./utils/friendPush";
+import { ProgramDao } from "./dao/programDao";
+import { renderRecordHtml, recordImage } from "./record";
+import { LogDao } from "./dao/logDao";
+import { renderUserHtml, userImage } from "./user";
+import { renderProgramDetailsHtml } from "./programDetails";
+import {
+  ProgramMarkdown_linkHeader,
+  ProgramMarkdown_parseRouteId,
+  ProgramMarkdown_render,
+} from "./utils/programMarkdown";
+import { renderProgramPreviewHtml } from "./programPreview";
+import { renderUsersHtml } from "../src/components/admin/usersHtml";
+import {
+  CollectionUtils_setBy,
+  CollectionUtils_inGroupsOf,
+  CollectionUtils_uniqBy,
+  CollectionUtils_groupByKeyUniq,
+  CollectionUtils_sortBy,
+  CollectionUtils_sortByExpr,
+  CollectionUtils_groupByKey,
+  CollectionUtils_sort,
+} from "../src/utils/collection";
+import { renderLogsHtml, ILogPayloads } from "../src/components/admin/logsHtml";
+import Rollbar from "rollbar";
+import { IDI } from "./utils/di";
+import { runMigrations } from "../src/migrations/runner";
+import { c, IEither } from "../src/utils/types";
+import {
+  ResponseUtils_json,
+  ResponseUtils_gzippedHtml,
+  ResponseUtils_getHeaders,
+  ResponseUtils_getReferer,
+  ResponseUtils_getHost,
+  ResponseUtils_clearSessionCookie,
+} from "./utils/response";
+import { ImageCacher_cache } from "./utils/imageCacher";
+import { ConsentMode_fromCountry } from "./utils/consentMode";
+import { ProgramImageGenerator } from "./utils/programImageGenerator";
+import { AppleAuthTokenDao } from "./dao/appleAuthTokenDao";
+import { Subscriptions, Subscriptions_isAppleJws, IGooglePaymentInfoV2 } from "./utils/subscriptions";
+import * as ClientSubscription from "../src/utils/subscriptions";
+import { NodeEncoder_decode, NodeEncoder_encode } from "./utils/nodeEncoder";
+import { renderProgramHtml } from "./program";
+import {
+  IExportedProgram,
+  Program_exportedPlannerProgramToExportedProgram,
+  Program_storageToExportedProgram,
+} from "../src/models/program";
+import { ImportExporter_getExportedProgram } from "../src/lib/importexporter";
+import { UrlDao } from "./dao/urlDao";
+import { AffiliateDao } from "./dao/affiliateDao";
+import { AffiliateAttribution_first } from "./utils/affiliateAttribution";
+import { renderAffiliateDashboardHtml } from "./affiliateDashboard";
+import { renderUserAffiliatesHtml } from "./userAffiliates";
+import { renderUsersDashboardHtml } from "./usersDashboard";
+import {
+  DateUtils_formatYYYYMMDD,
+  DateUtils_formatUTCYYYYMMDD,
+  DateUtils_yearAndMonth,
+  DateUtils_startOfUTCMonth,
+  DateUtils_addUTCMonths,
+} from "../src/utils/date";
+import { IUsersDashboardData } from "../src/pages/usersDashboard/usersDashboardContent";
+import { Mobile_isMobile } from "./utils/mobile";
+import { renderAffiliatesHtml } from "./affiliates";
+import { renderAiPromptHtml } from "./aiPrompt";
+import { FreeUserDao } from "./dao/freeUserDao";
+import { SubscriptionDetailsDao } from "./dao/subscriptionDetailsDao";
+import { AppleWebhookHandler } from "./utils/appleWebhookHandler";
+import { PaymentReconciler } from "./utils/paymentReconciler";
+import { ApplePaymentProcessor } from "./utils/applePaymentProcessor";
+import { GooglePaymentProcessor } from "./utils/googlePaymentProcessor";
+import { GoogleWebhookHandler } from "./utils/googleWebhookHandler";
+import { CouponDao } from "./dao/couponDao";
+import { DebugDao } from "./dao/debugDao";
+import { adminDebugPrefix } from "../src/models/adminDebug";
+import { Updates_handleManifest } from "./updates/manifestHandler";
+import { renderFriendPlannerHtml, renderPlannerHtml } from "./planner";
+import { ExceptionDao } from "./dao/exceptionDao";
+import { UrlUtils_build, UrlUtils_buildSafe } from "../src/utils/url";
+import { RollbarUtils_checkIgnore } from "../src/utils/rollbar";
+import { IAccount, Account_getFromStorage } from "../src/models/account";
+import { Storage_get, Storage_updateVersions, Storage_validate } from "../src/models/storage";
+import { LoginAdoptLocal_planFromIds } from "../src/models/loginAdoptLocal";
+import { LoginConflictSummary_fromIds, LoginConflictSummary_parsePhoneIds } from "../src/models/loginConflictSummary";
+import {
+  VersionTrackerUtils_SERVER_DEVICE_ID,
+  VersionTrackerUtils_UNIDENTIFIED_DEVICE_ID,
+} from "../src/models/versionTracker/utils";
+import { renderProgramsListHtml } from "./programsList";
+import { renderMainHtml } from "./main";
+import { getUserImagesPrefix, LftS3Buckets } from "./dao/buckets";
+import { IStorageUpdate2 } from "../src/utils/sync";
+import {
+  WatchStorageFilter_versionsWithoutDashboards,
+  WatchStorageFilter_withoutDashboards,
+} from "../src/utils/watchStorageFilter";
+import {
+  FieldRevision_dashboardText,
+  FieldRevision_isStale,
+  FieldRevision_programPlanner,
+} from "../src/utils/fieldRevision";
+import {
+  DashboardWebSave_create,
+  DashboardWebSave_delete,
+  DashboardWebSave_select,
+  DashboardWebSave_update,
+  IDashboardWebSaveResult,
+} from "../src/models/dashboardWebSave";
+import { Dashboard_current } from "../src/models/dashboard";
+import { renderDashboardsListHtml } from "./dashboardsList";
+import { DashboardStorageWrite_apply } from "./utils/dashboardStorageWrite";
+import { renderDashboardEditorHtml } from "./dashboardEditor";
+import { IEventPayload, IPostSyncResponse } from "../src/api/service";
+import { Settings_applyExportedProgram, Settings_applyWebEditorSettings } from "../src/models/settings";
+import { PlannerProgram_generateFullText } from "../src/pages/planner/models/plannerProgram";
+import { renderLoginHtml } from "./login";
+import { ExerciseImageUtils_exists } from "../src/models/exerciseImage";
+import { Exercise_fromUrlSlug } from "../src/models/exercise";
+import { renderExerciseHtml } from "./exercise";
+import { renderAllExercisesHtml } from "./allExercises";
+import { renderAllProgramsHtml } from "./allPrograms";
+import { renderAllDocsHtml } from "./allDocs";
+import { renderDocDetailsHtml } from "./docDetails";
+import { renderAllFeaturesHtml } from "./allFeatures";
+import { renderFeatureDetailsHtml } from "./featureDetails";
+import { DocDao } from "./dao/docDao";
+import { renderRepMaxHtml } from "./repmax";
+import { MathUtils_toWord } from "../src/utils/math";
+import { EventDao } from "./dao/eventDao";
+import { PaymentDao, IPaymentDao } from "./dao/paymentDao";
+import { StorageDao } from "./dao/storageDao";
+import { renderUserDashboardHtml } from "./userDashboard";
+import {
+  renderPaymentsDashboardHtml,
+  IPaymentsDashboardData,
+  IPaymentsDashboardUserAffiliate,
+  IPaymentsSummary,
+} from "./paymentsDashboard";
+import { computePaymentsSummary } from "../src/pages/paymentsDashboard/paymentsDashboardContent";
+import { IExportedPlannerProgram } from "../src/pages/planner/models/types";
+import {
+  getV1HistoryEndpoint,
+  getV1HistoryHandler,
+  getV1HistoryRecordEndpoint,
+  getV1HistoryRecordHandler,
+  postV1HistoryEndpoint,
+  postV1HistoryHandler,
+  putV1HistoryEndpoint,
+  putV1HistoryHandler,
+  deleteV1HistoryEndpoint,
+  deleteV1HistoryHandler,
+  getV1FriendsEndpoint,
+  getV1FriendsHandler,
+  getV1FriendHistoryEndpoint,
+  getV1FriendHistoryHandler,
+  getV1FriendHistoryRecordEndpoint,
+  getV1FriendHistoryRecordHandler,
+  getV1FriendProgramsEndpoint,
+  getV1FriendProgramsHandler,
+  getV1FriendProgramEndpoint,
+  getV1FriendProgramHandler,
+  putV1FriendProgramEndpoint,
+  putV1FriendProgramHandler,
+  getV1ProgramsEndpoint,
+  getV1ProgramsHandler,
+  getV1DashboardsEndpoint,
+  getV1DashboardsHandler,
+  getV1DashboardEndpoint,
+  getV1DashboardHandler,
+  postV1DashboardEndpoint,
+  postV1DashboardHandler,
+  putV1DashboardEndpoint,
+  putV1DashboardHandler,
+  deleteV1DashboardEndpoint,
+  deleteV1DashboardHandler,
+  postV1DashboardPreviewEndpoint,
+  postV1DashboardPreviewHandler,
+  getV1ProgramEndpoint,
+  getV1ProgramHandler,
+  postV1ProgramEndpoint,
+  postV1ProgramHandler,
+  putV1ProgramEndpoint,
+  putV1ProgramHandler,
+  deleteV1ProgramEndpoint,
+  deleteV1ProgramHandler,
+  postV1PlaygroundEndpoint,
+  postV1PlaygroundHandler,
+  postV1ProgramStatsEndpoint,
+  postV1ProgramStatsHandler,
+  getV1GymsEndpoint,
+  getV1GymsHandler,
+  postV1GymEndpoint,
+  postV1GymHandler,
+  putV1GymEndpoint,
+  putV1GymHandler,
+  deleteV1GymEndpoint,
+  deleteV1GymHandler,
+  getV1EquipmentListEndpoint,
+  getV1EquipmentListHandler,
+  getV1EquipmentEndpoint,
+  getV1EquipmentHandler,
+  postV1EquipmentEndpoint,
+  postV1EquipmentHandler,
+  putV1EquipmentEndpoint,
+  putV1EquipmentHandler,
+  getV1ExerciseDataListEndpoint,
+  getV1ExerciseDataListHandler,
+  getV1ExerciseDataEndpoint,
+  getV1ExerciseDataHandler,
+  putV1ExerciseDataEndpoint,
+  putV1ExerciseDataHandler,
+  deleteV1ExerciseDataEndpoint,
+  deleteV1ExerciseDataHandler,
+  getV1MeasurementsListEndpoint,
+  getV1MeasurementsListHandler,
+  getV1MeasurementEndpoint,
+  getV1MeasurementHandler,
+  postV1MeasurementEndpoint,
+  postV1MeasurementHandler,
+  putV1MeasurementEndpoint,
+  putV1MeasurementHandler,
+  deleteV1MeasurementEndpoint,
+  deleteV1MeasurementHandler,
+  getV1WorkoutNextEndpoint,
+  getV1WorkoutNextHandler,
+  postV1WorkoutStartEndpoint,
+  postV1WorkoutStartHandler,
+  getV1WorkoutCurrentEndpoint,
+  getV1WorkoutCurrentHandler,
+  deleteV1WorkoutCurrentEndpoint,
+  deleteV1WorkoutCurrentHandler,
+  postV1WorkoutSetEndpoint,
+  postV1WorkoutSetHandler,
+  postV1WorkoutSetsEndpoint,
+  postV1WorkoutSetsHandler,
+  postV1WorkoutFinishEndpoint,
+  postV1WorkoutFinishHandler,
+  getV1SettingsEndpoint,
+  getV1SettingsHandler,
+} from "./api/v1";
+import {
+  getMcpEndpoint,
+  getMcpHandler,
+  deleteMcpEndpoint,
+  deleteMcpHandler,
+  postMcpEndpoint,
+  postMcpHandler,
+} from "./mcp/handler";
+import {
+  getProtectedResourceEndpoint,
+  getProtectedResourceMcpEndpoint,
+  getProtectedResourceHandler,
+  getAuthServerMetadataEndpoint,
+  getAuthServerMetadataHandler,
+  postOauthRegisterEndpoint,
+  postOauthRegisterHandler,
+  getOauthAuthorizeEndpoint,
+  getOauthAuthorizeHandler,
+  postOauthAuthorizeEndpoint,
+  postOauthAuthorizeHandler,
+  postOauthTokenEndpoint,
+  postOauthTokenHandler,
+} from "./mcp/oauth";
+import { ICollectionVersions } from "../src/models/versionTracker";
+import { isFieldVersion } from "../src/models/versionTracker/types";
+import { ObjectUtils_values, ObjectUtils_keys } from "../src/utils/object";
+import { ClaudeProvider } from "./utils/llms/claude";
+import { MuscleGenerator } from "./utils/muscleGenerator";
+import { LlmMuscles } from "./utils/llms/llmMuscles";
+import { AiMuscleCacheDao } from "./dao/aiMuscleCacheDao";
+import { TestimonialDao } from "./dao/testimonialDao";
+
+interface IOpenIdResponseSuccess {
+  sub: string;
+  email: string;
+  email_verified?: boolean | string;
+}
+
+interface IOpenIdResponseError {
+  error: string;
+  error_description: string;
+}
+
+interface IPayload {
+  event: APIGatewayProxyEvent;
+  di: IDI;
+}
+
+export interface IStatsUserData {
+  userId: string;
+  email?: string;
+  userTs?: number;
+  isSubscribed?: boolean;
+  firstAction: { ts: number; name: string };
+  lastAction: { ts: number; name: string };
+}
+
+export type IEnv = "dev" | "prod";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getBodyJson(event: APIGatewayProxyEvent): any {
+  try {
+    return JSON.parse(Buffer.from(event.body || "e30=", "base64").toString("utf8"));
+  } catch (e) {
+    return JSON.parse(event.body || "{}");
+  }
+}
+
+async function getCurrentUserId(event: APIGatewayProxyEvent, di: IDI): Promise<string | undefined> {
+  const userDao = new UserDao(di);
+
+  // Try cookies first (web/iOS web view)
+  const cookies = Cookie.parse(event.headers.Cookie || event.headers.cookie || "");
+  let userId = await userDao.getCurrentUserIdFromCookie(cookies);
+
+  if (!userId) {
+    // Try Authorization header (Apple Watch)
+    const authHeader = event.headers.Authorization || event.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+      const token = authHeader.substring(7);
+      userId = await userDao.getUserIdFromToken(token);
+    }
+  }
+
+  return userId;
+}
+
+async function getAdminTargetOrCurrentUserId(
+  event: APIGatewayProxyEvent,
+  di: IDI,
+  params: { key?: string; userid?: string }
+): Promise<{ userId?: string; isAdmin?: boolean; error?: "invalid_admin_key" }> {
+  if (params.userid == null) {
+    return { userId: await getCurrentUserId(event, di) };
+  }
+  if (params.key != null && params.key === (await di.secrets.getApiKey())) {
+    return { userId: params.userid, isAdmin: true };
+  }
+  return { error: "invalid_admin_key" };
+}
+
+async function getCurrentLimitedUser(event: APIGatewayProxyEvent, di: IDI): Promise<ILimitedUserDao | undefined> {
+  const userId = await getCurrentUserId(event, di);
+  if (userId != null) {
+    return new UserDao(di).getLimitedById(userId);
+  } else {
+    return undefined;
+  }
+}
+
+function getUserAgent(event: APIGatewayProxyEvent): string {
+  return event.headers["user-agent"] || event.headers["User-Agent"] || "";
+}
+
+function getLandingPageCookie(event: APIGatewayProxyEvent): string | undefined {
+  const cookies = Cookie.parse(event.headers.Cookie || event.headers.cookie || "");
+  const raw = cookies.lft_landing;
+  return raw && raw.startsWith("/") && raw.length <= 256 ? raw : undefined;
+}
+
+function getIsLoggedIn(event: APIGatewayProxyEvent): boolean {
+  const authState = event.headers["x-auth-state"] || event.headers["X-Auth-State"];
+  return authState === "yes";
+}
+
+const postVerifyAppleReceiptEndpoint = Endpoint.build("/api/verifyapplereceipt");
+const postVerifyAppleReceiptHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postVerifyAppleReceiptEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const bodyJson = getBodyJson(event);
+  const { appleReceipt, userId } = bodyJson;
+  // return ResponseUtils.json(200, event, { result: true });
+  if (appleReceipt == null) {
+    return ResponseUtils_json(200, event, { result: false });
+  }
+  const subscriptions = new Subscriptions(di.log, di.secrets);
+
+  if (Subscriptions_isAppleJws(appleReceipt)) {
+    const transactionInfo = subscriptions.verifyAppleJws(appleReceipt);
+    if (!transactionInfo || !subscriptions.isAppleJwsActive(transactionInfo)) {
+      return ResponseUtils_json(200, event, { result: false });
+    }
+    if (userId) {
+      const subscriptionDetails = subscriptions.getAppleVerificationInfoFromJws(userId, transactionInfo);
+      if (subscriptionDetails) {
+        await new SubscriptionDetailsDao(di).add(subscriptionDetails);
+      }
+      try {
+        const applePaymentProcessor = new ApplePaymentProcessor(di, subscriptions);
+        await applePaymentProcessor.processJwsPayment(userId, transactionInfo);
+      } catch (e) {
+        di.log.log("Failed to add Apple JWS payment record", e);
+      }
+    }
+    return ResponseUtils_json(200, event, { result: true });
+  }
+
+  const appleJson = await subscriptions.getAppleVerificationJson(appleReceipt);
+  let verifiedAppleReceipt = undefined;
+  if (appleJson) {
+    verifiedAppleReceipt = subscriptions.verifyAppleReceiptJson(appleReceipt, appleJson);
+    if (verifiedAppleReceipt && userId) {
+      const subscriptionDetails = subscriptions.getAppleVerificationInfo(userId, appleJson);
+      if (subscriptionDetails) {
+        await new SubscriptionDetailsDao(di).add(subscriptionDetails);
+      }
+
+      try {
+        const applePaymentProcessor = new ApplePaymentProcessor(di, subscriptions);
+        await applePaymentProcessor.processReceiptPayment(userId, appleJson.latest_receipt_info);
+      } catch (e) {
+        di.log.log("Failed to add Apple payment record", e);
+      }
+    }
+    return ResponseUtils_json(200, event, { result: !!verifiedAppleReceipt });
+  } else {
+    return ResponseUtils_json(200, event, { result: true });
+  }
+};
+
+async function recordGoogleVerificationPayment(
+  di: IDI,
+  userId: string,
+  paymentInfo: IGooglePaymentInfoV2,
+  productId: string
+): Promise<void> {
+  try {
+    await new GooglePaymentProcessor(di).processVerificationPayment(userId, paymentInfo, productId);
+  } catch (e) {
+    di.log.log("Failed to add Google payment record", e);
+  }
+}
+
+const postVerifyGooglePurchaseTokenEndpoint = Endpoint.build("/api/verifygooglepurchasetoken");
+const postVerifyGooglePurchaseTokenHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postVerifyGooglePurchaseTokenEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const bodyJson = getBodyJson(event);
+  const { googlePurchaseToken, userId } = bodyJson;
+  if (googlePurchaseToken == null) {
+    return ResponseUtils_json(200, event, { result: false });
+  }
+  const subscriptions = new Subscriptions(di.log, di.secrets);
+  const { token, productId } = JSON.parse(googlePurchaseToken) as { token: string; productId: string };
+  const isLifetime = productId.indexOf("lifetime") !== -1;
+  // A client deletes the receipt on `result: false`, so an unanswered lookup (transport failure, Google 5xx)
+  // must fail open. Only a real Google verdict may fail closed.
+  let verifiedGooglePurchaseToken = true;
+  // Returned to the caller keyed by possession of the purchase token (a real secret), so the client can read
+  // its live subscription status — incl. a queued deferred plan switch — without a userId-based lookup.
+  let subscription:
+    | { type: string; product: string; isActive: boolean; expires: number; pendingProduct?: string }
+    | undefined;
+  // One v2 fetch drives acknowledge gating, entitlement, the details row, and the payment record.
+  if (isLifetime) {
+    const pv2 = await subscriptions.getGoogleProductV2(token);
+    if (pv2) {
+      await subscriptions.maybeAcknowledgeGoogleProductV2(pv2, token, productId);
+      verifiedGooglePurchaseToken = subscriptions.isGoogleProductV2Active(pv2);
+      if (verifiedGooglePurchaseToken && userId) {
+        const details = subscriptions.getGoogleProductVerificationInfoV2(userId, pv2, token);
+        if (details) {
+          await new SubscriptionDetailsDao(di).add(details);
+        }
+        await recordGoogleVerificationPayment(
+          di,
+          userId,
+          subscriptions.buildGoogleProductPaymentInfoV2(pv2, token),
+          productId
+        );
+      }
+    }
+  } else {
+    // Resolve PENDING_PURCHASE_CANCELED to the real subscription (via linkedPurchaseToken) so a canceled
+    // upgrade/downgrade token doesn't read as inactive or overwrite the active row. effToken is the resolved
+    // subscription's token, used so the details row / originalTransactionId key off the real subscription.
+    const resolved = await subscriptions.getGoogleSubscriptionV2Resolved(token);
+    if (resolved) {
+      const sv2 = resolved.json;
+      const effToken = resolved.token;
+      await subscriptions.maybeAcknowledgeGoogleSubscriptionV2(sv2, effToken, productId);
+      verifiedGooglePurchaseToken = subscriptions.isGoogleSubscriptionV2Active(sv2);
+      if (verifiedGooglePurchaseToken && userId) {
+        const details = subscriptions.getGoogleVerificationInfoV2(userId, sv2, effToken);
+        if (details) {
+          await new SubscriptionDetailsDao(di).add(details);
+          subscription = {
+            type: details.type,
+            product: details.product,
+            isActive: details.isActive,
+            expires: details.expires,
+            pendingProduct: details.pendingProduct,
+          };
+        }
+        await recordGoogleVerificationPayment(
+          di,
+          userId,
+          subscriptions.buildGoogleSubscriptionPaymentInfoV2(sv2, effToken),
+          productId
+        );
+      }
+    }
+  }
+  return ResponseUtils_json(200, event, { result: verifiedGooglePurchaseToken, subscription });
+};
+
+const postAppleWebhookEndpoint = Endpoint.build("/api/apple-payment-webhook");
+const postAppleWebhookHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postAppleWebhookEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const body = event.body;
+  const appleWebhookHandler = new AppleWebhookHandler(di);
+  const result = await appleWebhookHandler.handleWebhook(body);
+
+  if (result.error) {
+    return ResponseUtils_json(400, event, result);
+  }
+
+  return ResponseUtils_json(200, event, result);
+};
+
+const postGoogleWebhookEndpoint = Endpoint.build("/api/google-payment-webhook");
+const postGoogleWebhookHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postGoogleWebhookEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const handler = new GoogleWebhookHandler(di);
+  const authorizationHeader = event.headers?.authorization || event.headers?.Authorization;
+  const result = await handler.handleWebhook(event.body || "", authorizationHeader);
+
+  return ResponseUtils_json(200, event, { status: result.success ? "ok" : "error", message: result.message });
+};
+
+const postReceiveAdAttrEndpoint = Endpoint.build("/api/adattr");
+const postReceiveAdAttrHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postReceiveAdAttrEndpoint
+> = async ({ payload }) => {
+  const body = payload.event.body?.toString() ?? "";
+  const bucket = `${LftS3Buckets.debugs}${Utils_getEnv() === "dev" ? "dev" : ""}`;
+  const uid = UidFactory_generateUid(12);
+  await payload.di.s3.putObject({
+    bucket: bucket,
+    key: "adattrs/" + uid,
+    body: body,
+  });
+  return ResponseUtils_json(200, payload.event, { data: "ok" });
+};
+
+function filterStorageForWatch(storage: IStorage): IStorage {
+  const currentProgramId = storage.currentProgramId;
+
+  const filteredPrograms = currentProgramId ? storage.programs.filter((p) => p.id === currentProgramId) : [];
+  const currentProgram = filteredPrograms[0];
+  const programVersionKey = currentProgram?.clonedAt != null ? String(currentProgram.clonedAt) : undefined;
+
+  let filteredVersions = storage._versions;
+  if (filteredVersions) {
+    const programsVersions = filteredVersions.programs as
+      | { items?: Record<string, unknown>; deleted?: Record<string, unknown> }
+      | undefined;
+    filteredVersions = {
+      ...filteredVersions,
+      history: { items: {} },
+      stats: {
+        weight: {},
+        length: {},
+        percentage: {},
+      },
+      programs: programsVersions
+        ? {
+            ...programsVersions,
+            items:
+              programVersionKey && programsVersions.items
+                ? { [programVersionKey]: programsVersions.items[programVersionKey] }
+                : {},
+          }
+        : { items: {} },
+    };
+  }
+
+  return WatchStorageFilter_withoutDashboards({
+    ...storage,
+    programs: filteredPrograms,
+    history: [],
+    stats: { weight: {}, length: {}, percentage: {} },
+    _versions: filteredVersions,
+  });
+}
+
+const postSync2Endpoint = Endpoint.build("/api/sync2", {
+  tempuserid: "string?",
+});
+const postSync2Handler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postSync2Endpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const setCookie: string | undefined = undefined;
+  const rawBodyJson = getBodyJson(event);
+
+  // Support both compressed (with data field) and uncompressed payloads
+  let bodyJson: Record<string, unknown>;
+  if (rawBodyJson.data && typeof rawBodyJson.data === "string") {
+    const bodyJsonStr = await NodeEncoder_decode(rawBodyJson.data);
+    bodyJson = JSON.parse(bodyJsonStr);
+  } else {
+    bodyJson = rawBodyJson;
+  }
+  const rawDeviceId = bodyJson.deviceId as string | undefined;
+  if (!rawDeviceId) {
+    di.log.log("sync2: request without a device id, falling back to the shared unidentified node");
+  }
+  const deviceId = rawDeviceId || VersionTrackerUtils_UNIDENTIFIED_DEVICE_ID;
+  const timestamp: number = (bodyJson.timestamp as number) || Date.now();
+  const historylimit = bodyJson.historylimit as number | undefined;
+  const isWatch = bodyJson.isWatch as boolean | undefined;
+  const socialRequest = InboundSocial_parseRequest(bodyJson.social);
+  const rawStorageUpdate = bodyJson.storageUpdate as IStorageUpdate2;
+  const storageUpdate: IStorageUpdate2 = isWatch
+    ? {
+        ...rawStorageUpdate,
+        storage: rawStorageUpdate.storage && WatchStorageFilter_withoutDashboards(rawStorageUpdate.storage),
+        versions: WatchStorageFilter_versionsWithoutDashboards(rawStorageUpdate.versions),
+      }
+    : rawStorageUpdate;
+  const userId = await getCurrentUserId(event, di);
+  let keyResult: { key: string; isClaimed: boolean } | undefined;
+  if (params.tempuserid) {
+    keyResult = await new FreeUserDao(di).getKey(params.tempuserid);
+  }
+  const key = keyResult ? (keyResult.isClaimed ? keyResult.key : "unclaimed") : undefined;
+  const response = (status: number, r: IPostSyncResponse): APIGatewayProxyResult =>
+    ResponseUtils_json(status, event, r, setCookie ? { "set-cookie": setCookie } : undefined);
+  const eventDao = new EventDao(di);
+  const storageDao = new StorageDao(di);
+  if (userId != null) {
+    const userDao = new UserDao(di);
+    const limitedUser = await userDao.getLimitedById(userId);
+    if (limitedUser != null) {
+      const guardArgs = { cookieUserId: userId, tempUserId: params.tempuserid };
+      let guard = SyncAccountGuard_decide(guardArgs);
+      if (guard === "lookup") {
+        const tempUserIsAccount = (await userDao.getLimitedById(params.tempuserid!)) != null;
+        guard = SyncAccountGuard_decide({ ...guardArgs, tempUserIsAccount });
+      }
+      if (guard === "mismatch") {
+        di.log.log(`sync2-account-mismatch {"tempuserid":"${params.tempuserid}"}`);
+        return response(409, {
+          type: "error",
+          error: "account_mismatch",
+          email: limitedUser.email,
+          user_id: limitedUser.id,
+          key,
+        });
+      }
+      const socialPromise =
+        socialRequest != null
+          ? InboundSocial_loadBounded(di, limitedUser.id, socialRequest)
+          : Promise.resolve(undefined);
+      di.log.log(`Server oid: ${limitedUser.storage.originalId}, update oid: ${storageUpdate.originalId}`);
+      if (storageUpdate.originalId != null && limitedUser.storage.originalId === storageUpdate.originalId) {
+        di.log.log("Fetch: Safe update");
+        const result = await userDao.applySafeSync2(limitedUser, storageUpdate, deviceId);
+        if (result.success) {
+          di.log.log("New original id", result.data.originalId);
+          const [storageId] = await Promise.all([
+            storageDao.store(limitedUser.id, result.data.newStorage, storageUpdate?.storage),
+            userDao.maybeSaveProgramRevision(limitedUser.id, storageUpdate),
+          ]);
+          if (result.data.newStorage != null) {
+            await PushSync_notify(di, limitedUser.id, deviceId, result.data.originalId);
+          }
+          if (storageId) {
+            await eventDao.post({
+              type: "safesnapshot",
+              userId: limitedUser.id,
+              timestamp,
+              commithash: process.env.COMMIT_HASH || "",
+              storage_id: storageId,
+              update: EventDao.prepareStorageUpdateForEvent(storageUpdate),
+              isMobile: Mobile_isMobile(
+                payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || ""
+              ),
+            });
+          }
+          return response(200, {
+            type: "clean",
+            new_original_id: result.data.originalId,
+            email: limitedUser.email,
+            user_id: limitedUser.id,
+            key,
+            social: await socialPromise,
+          });
+        } else {
+          return response(400, { type: "error", error: result.error, key });
+        }
+      } else {
+        di.log.log("Fetch: Merging update");
+        storageUpdate.originalId = Date.now();
+        const result = await userDao.applySafeSync2(limitedUser, storageUpdate, deviceId);
+        if (result.success) {
+          di.log.log("New original id", result.data.originalId);
+          const hasMergeWrite = result.data.didWrite;
+          const readArgs = DirtySyncRead_args({ hasMergeWrite, historylimit, isWatch });
+          const fullUser = (await userDao.getById(userId, readArgs))!;
+          const storage = fullUser.storage;
+          if (storage.tempUserId !== userId) {
+            storage.tempUserId = userId;
+            if (storage._versions) {
+              storage._versions.tempUserId = Date.now();
+            }
+          }
+          const [storageId] = await Promise.all([
+            hasMergeWrite ? storageDao.store(limitedUser.id, storage, storageUpdate?.storage) : undefined,
+            (storageUpdate.storage?.programs?.length ?? 0) > 0
+              ? userDao.maybeSaveProgramRevision(limitedUser.id, storageUpdate)
+              : undefined,
+          ]);
+          if (result.data.newStorage != null) {
+            await PushSync_notify(di, limitedUser.id, deviceId, result.data.originalId);
+          }
+          if (key) {
+            storage.subscription.key = key;
+          }
+          if (storageId) {
+            await eventDao.post({
+              type: "mergesnapshot",
+              userId: limitedUser.id,
+              timestamp,
+              storage_id: storageId,
+              commithash: process.env.COMMIT_HASH || "",
+              isMobile: Mobile_isMobile(
+                payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || ""
+              ),
+              update: EventDao.prepareStorageUpdateForEvent(storageUpdate),
+            });
+          }
+          if (historylimit != null) {
+            storage.history = storage.history.slice(0, historylimit);
+          }
+          // Filter storage for watch to reduce payload size
+          // See: rfcs/watch-storage-performance.md
+          const responseStorage = isWatch ? filterStorageForWatch(storage) : storage;
+          return response(200, {
+            type: "dirty",
+            storage: responseStorage,
+            email: limitedUser.email,
+            user_id: limitedUser.id,
+            key,
+            social: await socialPromise,
+          });
+        } else {
+          di.log.log("Error", result.error);
+          return response(400, { type: "error", error: result.error, key });
+        }
+      }
+    }
+  }
+  return ResponseUtils_json(401, event, { type: "error", error: "not_authorized", key });
+};
+
+const getStorageEndpoint = Endpoint.build("/api/storage", {
+  tempuserid: "string?",
+  key: "string?",
+  userid: "string?",
+  storageid: "string?",
+  historylimit: "number?",
+});
+const getStorageHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getStorageEndpoint> = async ({
+  payload,
+  match,
+}) => {
+  const { event, di } = payload;
+  // Admin reads must NOT mint a target-user session cookie - that would leave the caller
+  // authenticated as the target. Admin clients pass key+userid on every request instead.
+  const { userId, isAdmin, error } = await getAdminTargetOrCurrentUserId(event, di, match.params);
+  if (error === "invalid_admin_key") {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  let keyResult: { key: string; isClaimed: boolean } | undefined;
+  if (match.params.tempuserid) {
+    keyResult = await new FreeUserDao(di).getKey(match.params.tempuserid);
+  }
+  const key = keyResult ? (keyResult.isClaimed ? keyResult.key : "unclaimed") : undefined;
+  if (userId != null) {
+    const userDao = new UserDao(di);
+    const user = await userDao.getById(userId, { historyLimit: match.params.historylimit });
+    if (user != null) {
+      if (isAdmin && match.params.storageid) {
+        const storageDao = new StorageDao(di);
+        const loadedStorage = await storageDao.get(user.id, match.params.storageid);
+        if (loadedStorage) {
+          user.storage = loadedStorage.data as IStorage;
+        }
+      }
+      di.log.log(`Responding user data, id: ${user.storage.id}, original id: ${user.storage.originalId}`);
+      user.storage.originalId = user.storage.originalId || Date.now();
+      return ResponseUtils_json(200, event, {
+        storage: user.storage,
+        email: user.email,
+        user_id: user.id,
+        is_new_user: false,
+        key,
+      });
+    }
+  }
+  return ResponseUtils_json(200, event, { key });
+};
+
+const getUpdatesManifestEndpoint = Endpoint.build("/api/updates/manifest");
+const getUpdatesManifestHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUpdatesManifestEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return Updates_handleManifest(event, di);
+};
+
+const saveDebugEndpoint = Endpoint.build("/api/debug");
+const saveDebugHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof saveDebugEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const { id, data } = getBodyJson(event);
+  const idStr = typeof id === "number" ? `${id}` : id;
+  if (typeof idStr !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(idStr)) {
+    return ResponseUtils_json(400, event, { error: "Invalid id" });
+  }
+  const debugDao = new DebugDao(di);
+  let debugData: string;
+  if (typeof data === "string") {
+    debugData = await NodeEncoder_decode(data);
+  } else {
+    debugData = JSON.stringify(data);
+  }
+  await debugDao.store(idStr, debugData);
+  return ResponseUtils_json(200, event, { data: "ok" });
+};
+
+const getDebugInfoEndpoint = Endpoint.build("/api/debuginfo", {
+  key: "string",
+  userid: "string",
+  timestamp: "string?",
+});
+const getDebugInfoHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getDebugInfoEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  if (params.key !== (await di.secrets.getApiKey())) {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  const debugDao = new DebugDao(di);
+  if (params.timestamp == null) {
+    const list = await debugDao.list(params.userid);
+    return ResponseUtils_json(200, event, { list: list ?? [] });
+  }
+  const debug = await debugDao.get(params.userid, params.timestamp);
+  if (debug == null) {
+    return ResponseUtils_json(404, event, { error: "Snapshot not found" });
+  }
+  const rawState = JSON.parse(debug.data).state;
+  const state = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
+  const storage = state?.storage;
+  if (storage == null) {
+    return ResponseUtils_json(404, event, { error: "Snapshot has no storage" });
+  }
+  const encodedStorage = await NodeEncoder_encode(JSON.stringify(storage));
+  return ResponseUtils_json(200, event, { storage: encodedStorage });
+};
+
+const postDebugSessionEndpoint = Endpoint.build("/api/admin/debugsession", {
+  key: "string",
+  userid: "string",
+});
+const postDebugSessionHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postDebugSessionEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  if (params.key !== (await di.secrets.getApiKey())) {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  if (!params.userid.startsWith(adminDebugPrefix)) {
+    return ResponseUtils_json(400, event, { error: `userid must be a ${adminDebugPrefix} debug id` });
+  }
+  const debugId = params.userid;
+  const userDao = new UserDao(di);
+  const existing = await userDao.getLimitedById(debugId);
+  const email = existing?.email ?? `${debugId}@debug.liftosaur.com`;
+  if (existing == null) {
+    const debugUser = UserDao.build(debugId, email, {});
+    await userDao.saveStorage(debugUser, debugUser.storage, VersionTrackerUtils_SERVER_DEVICE_ID);
+  }
+  const session = JWT.sign({ userId: debugId }, await di.secrets.getCookieSecret());
+  const setCookie = Cookie.serialize("session", session, {
+    httpOnly: true,
+    domain: ".liftosaur.com",
+    path: "/",
+    expires: new Date(new Date().getFullYear() + 10, 0, 1),
+  });
+  return ResponseUtils_json(200, event, { session, userId: debugId, email }, { "set-cookie": setCookie });
+};
+
+const postDevFriendPushEndpoint = Endpoint.build("/api/dev/friendpush");
+const postDevFriendPushHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postDevFriendPushEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  if (!Utils_isLocal()) {
+    return ResponseUtils_json(404, event, { error: "not_found" });
+  }
+  const userId = await getCurrentUserId(event, di);
+  if (userId == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  const { kind, recordId } = getBodyJson(event) ?? {};
+  if (kind === "reactions") {
+    const id = Number(recordId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return ResponseUtils_json(400, event, { error: "recordId required" });
+    }
+    await FriendPush_send(di, {
+      kind,
+      recipientId: userId,
+      recordId: id,
+      workoutLabel: "Test program · Day 1",
+      summary: { counts: { dino_fire: 2 }, reactors: [{ nickname: "Alice" }, { nickname: "Bob" }], total: 2 },
+    });
+  } else if (kind === "followRequest" || kind === "followApproved") {
+    await FriendPush_send(
+      di,
+      kind === "followRequest"
+        ? { kind, recipientId: userId, actorId: userId, requestId: "devtest" }
+        : { kind, recipientId: userId, actorId: userId, requestId: "devtest", isFollowBackRequested: false }
+    );
+  } else {
+    return ResponseUtils_json(400, event, { error: "kind must be followRequest, followApproved or reactions" });
+  }
+  return ResponseUtils_json(200, event, { data: { sent: kind } });
+};
+
+const postSetupTestAccountEndpoint = Endpoint.build("/api/dev/setuptestaccount");
+const postSetupTestAccountHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postSetupTestAccountEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  if (!Utils_isLocal()) {
+    return ResponseUtils_json(404, event, { error: "not_found" });
+  }
+  const userId = await getCurrentUserId(event, di);
+  if (userId == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  if (!userId.startsWith("test_")) {
+    return ResponseUtils_json(400, event, { error: "userid must be a test_ account" });
+  }
+  const { apiKey } = getBodyJson(event);
+  if (apiKey != null && (typeof apiKey !== "string" || !/^lftsk_[a-zA-Z0-9]{8,64}$/.test(apiKey))) {
+    return ResponseUtils_json(400, event, { error: "invalid apiKey" });
+  }
+  // Claimed free key = active subscription for both hasSubscription() and the app (re-injected on sync)
+  const tenYears = Date.now() + 10 * 365 * 24 * 60 * 60 * 1000;
+  const freeUser = await new FreeUserDao(di).create(userId, tenYears, true);
+  let apiKeyBound = false;
+  if (apiKey != null) {
+    await new ApiKeyDao(di).bindKey(apiKey, userId, "local-test-agent");
+    apiKeyBound = true;
+  }
+  return ResponseUtils_json(200, event, { data: { apiKeyBound, key: freeUser.key } });
+};
+
+const postWatchCrashReportEndpoint = Endpoint.build("/api/watchcrashreport");
+const postWatchCrashReportHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postWatchCrashReportEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const body = getBodyJson(event);
+  di.log.log(
+    `WATCH_CRASH_REPORT: device=${body.deviceIdentifier} type=${body.crashType} breadcrumb=${body.lastBreadcrumb} model=${body.deviceModel} os=${body.watchOSVersion} build=${body.bundleVersion}`
+  );
+  di.log.log(`WATCH_CRASH_LOGS: ${body.lastLogs}`);
+  return ResponseUtils_json(200, event, { data: "ok" });
+};
+
+const debugLogsEndpoint = Endpoint.build("/api/debuglogs");
+const debugLogsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof debugLogsEndpoint> = async ({
+  payload,
+}) => {
+  if (Utils_getEnv() !== "dev") {
+    return ResponseUtils_json(403, payload.event, { error: "forbidden" });
+  }
+  const { event } = payload;
+  const { log, device, timestamp } = getBodyJson(event);
+  if (!log) {
+    return ResponseUtils_json(400, event, { error: "log is required" });
+  }
+  const logFile = "/tmp/watchlogs.txt";
+  const date = new Date(timestamp || Date.now()).toISOString();
+  const logLine = `[${date}] [${device || "UNKNOWN"}] ${log}\n`;
+  fs.appendFileSync(logFile, logLine);
+  return ResponseUtils_json(200, event, { data: "ok" });
+};
+
+interface IAppleKeysResponse {
+  keys: Array<{
+    kty: string;
+    kid: string;
+    use: string;
+    alg: string;
+    n: string;
+    e: string;
+  }>;
+}
+
+async function signInResponse(
+  di: IDI,
+  event: APIGatewayProxyEvent,
+  user: IUserDao,
+  isNewUser: boolean
+): Promise<APIGatewayProxyResult> {
+  const cookieSecret = await di.secrets.getCookieSecret();
+  const session = JWT.sign({ userId: user.id }, cookieSecret);
+  const isNativeClient = (event.headers["x-client"] || event.headers["X-Client"] || "").startsWith("liftosaur-native");
+  // The free-user key is response-only (never persisted in storage), so it must ride along on the sign-in
+  // response too. Without it the client shows no premium until some later sync re-injects it - and right
+  // after login there's nothing to sync, so that wouldn't happen until the next app start.
+  const keyResult = await new FreeUserDao(di).getKey(user.id);
+  const resp: Record<string, unknown> = {
+    email: user.email,
+    user_id: user.id,
+    storage: user.storage,
+    is_new_user: isNewUser,
+    key: keyResult ? (keyResult.isClaimed ? keyResult.key : "unclaimed") : undefined,
+  };
+  if (isNativeClient) {
+    resp.session = session;
+  }
+
+  const landingPage = getLandingPageCookie(event);
+  if (landingPage && !isNativeClient) {
+    await new LogDao(di).recordAction(user.id, "ls-web-signin", landingPage);
+  }
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify(resp),
+    headers: {
+      ...ResponseUtils_getHeaders(event),
+      "set-cookie": Cookie.serialize("session", session, {
+        httpOnly: true,
+        domain: ".liftosaur.com",
+        path: "/",
+        expires: new Date(new Date().getFullYear() + 10, 0, 1),
+      }),
+    },
+  };
+}
+
+// Linking by email is only safe when the email is verified: OAuth ids imply
+// IdP-verified emails; password-only accounts must have clicked a link we sent
+// (emailVerifiedAt), otherwise pre-registering someone's email + password would
+// capture their future OAuth sign-ins.
+function pickEmailLinkTarget(di: IDI, candidates: ILimitedUserDao[]): ILimitedUserDao | undefined {
+  const eligible = candidates.filter((u) => u.googleId != null || u.appleId != null || u.emailVerifiedAt != null);
+  if (eligible.length === 0) {
+    return undefined;
+  }
+  const sorted = [...eligible].sort((a, b) => {
+    const workoutDiff = UserDao.lastWorkoutTs(b) - UserDao.lastWorkoutTs(a);
+    return workoutDiff !== 0 ? workoutDiff : (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  if (eligible.length > 1) {
+    di.log.log(
+      "Multiple accounts for email, picking by latest workout",
+      sorted.map((u) => ({ id: u.id, lastWorkout: UserDao.lastWorkoutTs(u), createdAt: u.createdAt }))
+    );
+  }
+  return sorted[0];
+}
+
+// The client suggests its anonymous local id so a new cloud account keeps it
+// (sync continuity), but it's unauthenticated input: only honor it for a
+// conditional CREATE. If the id exists, mint a server-side one - an
+// unconditional put would let anyone overwrite an existing user and take over
+// that account.
+async function createNewUser(
+  userDao: UserDao,
+  di: IDI,
+  clientId: unknown,
+  email: string,
+  opts: { appleId?: string; googleId?: string; passwordHash?: string }
+): Promise<IUserDao> {
+  const suggestedId =
+    typeof clientId === "string" && /^[a-zA-Z0-9_-]{4,40}$/.test(clientId) ? clientId : UidFactory_generateUid(10);
+  let user = UserDao.build(suggestedId, email, opts);
+  if (!(await userDao.create(user))) {
+    di.log.log("Signup with already-taken user id, generating a server-side id instead", suggestedId);
+    user = UserDao.build(UidFactory_generateUid(12), email, opts);
+    if (!(await userDao.create(user))) {
+      throw new Error("Failed to create a new user");
+    }
+  }
+  await userDao.saveStorage(user, user.storage, VersionTrackerUtils_SERVER_DEVICE_ID);
+  return user;
+}
+
+function getWebUrl(event: APIGatewayProxyEvent): string {
+  if (Utils_getEnv() === "prod") {
+    return "https://www.liftosaur.com";
+  }
+  const referer = ResponseUtils_getReferer(event);
+  const originResult = UrlUtils_buildSafe(referer);
+  return originResult.success ? originResult.data.origin : "https://local.liftosaur.com:8080";
+}
+
+const noEmail = "noemail@example.com";
+
+const appleLoginEndpoint = Endpoint.build("/api/signin/apple");
+const appleLoginHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof appleLoginEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const { id, historylimit } = bodyJson;
+  const identity = await verifyAppleIdentity(di, env, bodyJson);
+  if ("status" in identity) {
+    return ResponseUtils_json(identity.status, event, identity.body);
+  }
+  const { sub, email } = identity;
+  const userDao = new UserDao(di);
+  let user = await userDao.getByAppleId(sub, { historyLimit: historylimit });
+  let isNewUser = false;
+
+  if (user == null) {
+    const linkTarget = email !== noEmail ? pickEmailLinkTarget(di, await userDao.getAllByEmail(email)) : undefined;
+    if (linkTarget) {
+      di.log.log("Linking appleId to existing user with same email", linkTarget.id);
+      user = await userDao.getById(linkTarget.id, { historyLimit: historylimit });
+      user!.appleId = sub;
+      await userDao.store(user!);
+    } else {
+      user = await createNewUser(userDao, di, id, email, { appleId: sub });
+      isNewUser = true;
+    }
+  }
+
+  return signInResponse(di, event, user!, isNewUser);
+};
+
+async function verifyAppleIdentity(
+  di: IDI,
+  env: IEnv,
+  bodyJson: IBodyJson
+): Promise<IVerifiedIdentity | IIdentityError> {
+  const { idToken } = bodyJson;
+  const keysResponse = await di.fetch("https://appleid.apple.com/auth/keys");
+  const keysJson = (await keysResponse.json()) as IAppleKeysResponse;
+  const decodedToken = JWT.decode(idToken!, { complete: true });
+  if (decodedToken) {
+    const header = (decodedToken as Record<string, Record<string, string>>).header;
+    const content = (decodedToken as Record<string, Record<string, string>>).payload;
+    const kid = header.kid;
+    const key = keysJson.keys.find((k) => k.kid === kid);
+    if (key != null) {
+      const pem = rsaPemFromModExp(key.n, key.e);
+      const result = JWT.verify(idToken, pem, {
+        issuer: "https://appleid.apple.com",
+        audience: content.aud,
+      }) as { sub?: string; email?: string; email_verified?: boolean | string } | undefined;
+      if (result?.sub) {
+        // Apple sends email_verified as the string "true" in some tokens
+        const emailVerified = result.email_verified === true || result.email_verified === "true";
+        // Only trust (and store) the email if the provider verified it - an
+        // unverified claim must never become a link/reset target. Normalize so
+        // lookups match the lowercased emails stored by email/password signup.
+        const email = result.email && emailVerified ? normalizeEmail(result.email) : noEmail;
+
+        await new AppleAuthTokenDao(di).store(env, idToken, result.sub);
+        return { sub: result.sub, email };
+      }
+    }
+  }
+
+  return { status: 403, body: { error: "invalid_token" } };
+}
+
+const appleCallbackMobileEndpoint = Endpoint.build("/appleauthcallback-mobile.html");
+const appleCallbackMobileHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof appleCallbackMobileEndpoint
+> = async ({ payload }) => {
+  const { event } = payload;
+  const rawBody = event.isBase64Encoded ? Buffer.from(event.body || "", "base64").toString("utf8") : event.body || "";
+  const form = new URLSearchParams(rawBody);
+  const code = form.get("code") || "";
+  const idToken = form.get("id_token") || "";
+  const state = form.get("state") || "";
+  if (!code || !idToken) {
+    return {
+      statusCode: 400,
+      headers: { "content-type": "text/plain" },
+      body: "Missing code or id_token",
+    };
+  }
+  const deepLinkParams = [
+    `code=${encodeURIComponent(code)}`,
+    `id_token=${encodeURIComponent(idToken)}`,
+    state ? `state=${encodeURIComponent(state)}` : "",
+  ]
+    .filter((x) => x)
+    .join("&");
+  const deepLink = `com.liftosaur.www://apple-callback?${deepLinkParams}`;
+  const safeDeepLinkForScript = JSON.stringify(deepLink).replace(/<\//g, "<\\/");
+  const safeDeepLinkForHref = deepLink.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return {
+    statusCode: 200,
+    headers: { "content-type": "text/html" },
+    body:
+      `<!doctype html><html><head><meta charset="utf-8"><title>Signing in…</title></head><body>` +
+      `<script>window.location.replace(${safeDeepLinkForScript});</script>` +
+      `<p>Signing in… If not redirected, <a href="${safeDeepLinkForHref}">tap here</a>.</p>` +
+      `</body></html>`,
+  };
+};
+
+interface IVerifiedIdentity {
+  sub: string;
+  email: string;
+}
+
+interface IIdentityError {
+  status: number;
+  body: object;
+}
+
+type IBodyJson = ReturnType<typeof getBodyJson>;
+
+async function verifyGoogleIdentity(
+  di: IDI,
+  env: IEnv,
+  bodyJson: IBodyJson
+): Promise<IVerifiedIdentity | IIdentityError> {
+  const { token, forceuseremail, forceunverified } = bodyJson;
+  let openIdJson: IOpenIdResponseSuccess | IOpenIdResponseError;
+  if (env === "dev" && forceuseremail != null) {
+    openIdJson = {
+      email: forceuseremail,
+      sub: `${forceuseremail}googleId`,
+      email_verified: forceunverified !== true,
+    };
+  } else {
+    const url = `https://openidconnect.googleapis.com/v1/userinfo?access_token=${token}`;
+    const googleApiResponse = await di.fetch(url);
+    openIdJson = await googleApiResponse.json();
+  }
+
+  if ("error" in openIdJson) {
+    const url = `https://www.googleapis.com/oauth2/v1/tokeninfo?id_token=${token}`;
+    const googleApiResponse = await di.fetch(url);
+    const response = await googleApiResponse.json();
+    if ("error" in response) {
+      return { status: 403, body: openIdJson };
+    } else {
+      openIdJson = {
+        sub: response.user_id,
+        email: response.email,
+        email_verified: response.verified_email ?? response.email_verified,
+      };
+    }
+  }
+
+  await new GoogleAuthTokenDao(di).store(env, token, openIdJson.sub);
+  const emailVerified = openIdJson.email_verified === true || openIdJson.email_verified === "true";
+  // Normalize the IdP email so lookups match the lowercased emails stored by
+  // email/password signup (getAllByEmail is an exact GSI match). Only trust the
+  // email if the provider verified it: an unverified claim (federated/Workspace
+  // tokens can assert an email the holder doesn't own) must never be stored as
+  // the account email, or pickEmailLinkTarget would later treat it as a verified
+  // link/reset target via the googleId.
+  return { sub: openIdJson.sub, email: emailVerified ? normalizeEmail(openIdJson.email) : noEmail };
+}
+
+const googleLoginEndpoint = Endpoint.build("/api/signin/google");
+const googleLoginHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof googleLoginEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const { id, historylimit } = bodyJson;
+  const identity = await verifyGoogleIdentity(di, env, bodyJson);
+  if ("status" in identity) {
+    return ResponseUtils_json(identity.status, event, identity.body);
+  }
+  const { sub, email } = identity;
+  const userDao = new UserDao(di);
+  let user = await userDao.getByGoogleId(sub, { historyLimit: historylimit });
+  let isNewUser = false;
+
+  if (user == null) {
+    const linkTarget = email !== noEmail ? pickEmailLinkTarget(di, await userDao.getAllByEmail(email)) : undefined;
+    if (linkTarget) {
+      di.log.log("Linking googleId to existing user with same email", linkTarget.id);
+      user = await userDao.getById(linkTarget.id, { historyLimit: historylimit });
+      user!.googleId = sub;
+      await userDao.store(user!);
+    } else {
+      user = await createNewUser(userDao, di, id, email, { googleId: sub });
+      isNewUser = true;
+    }
+  }
+
+  return signInResponse(di, event, user!, isNewUser);
+};
+
+const emailRegex = /^[^\s@]+@[^\s@]+$/;
+const minPasswordLength = 8;
+// Not a security rule - just bounds scrypt input so absurd payloads don't burn CPU
+const maxPasswordLength = 256;
+
+function normalizeEmail(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+const emailSignupEndpoint = Endpoint.build("/api/signup/email");
+const emailSignupHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof emailSignupEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const { password, id } = bodyJson;
+  const email = normalizeEmail(bodyJson.email);
+  if (!emailRegex.test(email)) {
+    return ResponseUtils_json(400, event, { error: "invalid_email" });
+  }
+  if (typeof password !== "string" || password.length < minPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "invalid_password" });
+  }
+  if (password.length > maxPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "password_too_long" });
+  }
+  const userDao = new UserDao(di);
+  const emailAuthTokenDao = new EmailAuthTokenDao(di);
+  const candidates = await userDao.getAllByEmail(email);
+  if (candidates.some((u) => u.passwordHash != null)) {
+    return ResponseUtils_json(400, event, { error: "account_exists" });
+  }
+  const webUrl = getWebUrl(event);
+  const linkTarget = pickEmailLinkTarget(di, candidates);
+  if (linkTarget) {
+    // Existing OAuth account. Never store the requester's password (an attacker
+    // could submit a victim's email + a known password). Instead email the owner
+    // a link that lets THEM choose a password on the reset page - proving both
+    // inbox ownership and password ownership. Rate-limit so it can't be used to
+    // spam/phish the inbox, and return the same response regardless.
+    if (!(await emailAuthTokenDao.bumpAttemptsAndCheckLimit(env, `sendmail:${email}`))) {
+      const token = await emailAuthTokenDao.create(env, { type: "reset", userId: linkTarget.id }, 60 * 60);
+      try {
+        await di.ses.sendEmail({
+          destination: email,
+          source: "info@liftosaur.com",
+          subject: "Liftosaur - set a password for your account",
+          body:
+            `You (or someone else) tried to add an email/password login to the Liftosaur account for ${email}.\n\n` +
+            `This account currently signs in with Google or Apple. If you'd like to add a password, choose one here:\n\n` +
+            `${webUrl}/resetpassword?token=${token}\n\n` +
+            `The link expires in 1 hour. If that wasn't you, just ignore this email - nothing will change and no password is set.`,
+        });
+      } catch (e) {
+        di.log.log("Failed to send set-password email", e instanceof Error ? e.message : e);
+      }
+    }
+    return ResponseUtils_json(200, event, { status: "confirmation_sent" });
+  }
+  const passwordHash = await PasswordHash_hash(password);
+  const user = await createNewUser(userDao, di, id, email, { passwordHash });
+  try {
+    const token = await emailAuthTokenDao.create(env, { type: "verify", userId: user.id }, 7 * 24 * 60 * 60);
+    await di.ses.sendEmail({
+      destination: email,
+      source: "info@liftosaur.com",
+      subject: "Liftosaur - verify your email",
+      body:
+        `Welcome to Liftosaur!\n\n` +
+        `Please verify your email by opening this link:\n\n` +
+        `${webUrl}/verifyemail?token=${token}\n\n` +
+        `Verifying makes sure you can reset your password later if you forget it.`,
+    });
+  } catch (e) {
+    di.log.log("Failed to send verification email", e instanceof Error ? e.message : e);
+  }
+  return signInResponse(di, event, user, true);
+};
+
+const emailSigninEndpoint = Endpoint.build("/api/signin/email");
+const emailSigninHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof emailSigninEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const verified = await verifyEmailPassword(di, env, bodyJson);
+  if ("status" in verified) {
+    return ResponseUtils_json(verified.status, event, verified.body);
+  }
+  const user = await new UserDao(di).getById(verified.userId, { historyLimit: bodyJson.historylimit });
+  if (user == null) {
+    return ResponseUtils_json(403, event, { error: "account_not_found" });
+  }
+  return signInResponse(di, event, user, false);
+};
+
+async function verifyEmailPassword(
+  di: IDI,
+  env: IEnv,
+  bodyJson: IBodyJson
+): Promise<{ userId: string } | IIdentityError> {
+  const { password } = bodyJson;
+  const email = normalizeEmail(bodyJson.email);
+  // No account can have a >max password, so rejecting early (before any scrypt
+  // work) keeps the uniform error while avoiding hashing huge payloads
+  if (!email || typeof password !== "string" || password.length > maxPasswordLength) {
+    return { status: 403, body: { error: "invalid_credentials" } };
+  }
+  const emailAuthTokenDao = new EmailAuthTokenDao(di);
+  if (await emailAuthTokenDao.bumpAttemptsAndCheckLimit(env, email)) {
+    return { status: 429, body: { error: "too_many_attempts" } };
+  }
+  const userDao = new UserDao(di);
+  const candidates = await userDao.getAllByEmail(email);
+  const match = candidates.find((u) => u.passwordHash != null);
+  // Deliberately distinct errors: signup already discloses account existence,
+  // so a uniform message here would cost UX without hiding anything
+  if (match?.passwordHash == null) {
+    const providers = Array.from(
+      new Set(candidates.flatMap((u) => [...(u.googleId ? ["Google"] : []), ...(u.appleId ? ["Apple"] : [])]))
+    );
+    if (providers.length > 0) {
+      return { status: 403, body: { error: "use_oauth", providers } };
+    }
+    return { status: 403, body: { error: "account_not_found" } };
+  }
+  if (!(await PasswordHash_verify(password, match.passwordHash))) {
+    return { status: 403, body: { error: "wrong_password" } };
+  }
+  await emailAuthTokenDao.clearAttempts(env, email);
+  return { userId: match.id };
+}
+
+async function findOAuthUserId(
+  di: IDI,
+  attr: "googleId" | "appleId",
+  identity: IVerifiedIdentity
+): Promise<string | undefined> {
+  const userDao = new UserDao(di);
+  const userId = await userDao.getIdByProviderId(attr, identity.sub);
+  if (userId != null || identity.email === noEmail) {
+    return userId;
+  }
+  return pickEmailLinkTarget(di, await userDao.getAllByEmail(identity.email))?.id;
+}
+
+async function checkLoginUserId(
+  di: IDI,
+  env: IEnv,
+  bodyJson: IBodyJson
+): Promise<{ userId?: string } | IIdentityError> {
+  if (bodyJson.provider === "email") {
+    return verifyEmailPassword(di, env, bodyJson);
+  }
+  if (bodyJson.provider === "google" || bodyJson.provider === "apple") {
+    const identity =
+      bodyJson.provider === "google"
+        ? await verifyGoogleIdentity(di, env, bodyJson)
+        : await verifyAppleIdentity(di, env, bodyJson);
+    if ("status" in identity) {
+      return identity;
+    }
+    const attr = bodyJson.provider === "google" ? "googleId" : "appleId";
+    return { userId: await findOAuthUserId(di, attr, identity) };
+  }
+  return { status: 400, body: { error: "invalid_provider" } };
+}
+
+const checkLoginEndpoint = Endpoint.build("/api/checklogin");
+const checkLoginHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof checkLoginEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const bodyJson = getBodyJson(event);
+  const phone = LoginConflictSummary_parsePhoneIds(bodyJson.phone);
+  if (phone == null) {
+    return ResponseUtils_json(400, event, { error: "invalid_phone" });
+  }
+  const found = await checkLoginUserId(di, Utils_getEnv(), bodyJson);
+  if ("status" in found) {
+    return ResponseUtils_json(found.status, event, found.body);
+  }
+  const userId = found.userId;
+  if (userId == null || userId === bodyJson.id) {
+    return ResponseUtils_json(200, event, { status: "ok" });
+  }
+  const user = await new UserDao(di).getById(userId);
+  const storage = user != null ? Storage_get(user.storage) : undefined;
+  if (user == null || storage == null || !storage.success) {
+    return ResponseUtils_json(200, event, { status: "ok" });
+  }
+  const plan = LoginAdoptLocal_planFromIds({
+    oldUserId: bodyJson.id,
+    newUserId: userId,
+    adoption: "if-empty",
+    phone,
+    server: storage.data,
+  });
+  if (plan !== "conflict") {
+    return ResponseUtils_json(200, event, { status: "ok" });
+  }
+  return ResponseUtils_json(200, event, {
+    status: "conflict",
+    email: user.email,
+    summary: LoginConflictSummary_fromIds(phone, storage.data),
+  });
+};
+
+const verifyEmailEndpoint = Endpoint.build("/api/auth/verifyemail");
+const verifyEmailHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof verifyEmailEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const { token } = bodyJson;
+  if (typeof token !== "string" || !token) {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  const tokenPayload = await new EmailAuthTokenDao(di).consume(env, token, ["verify"]);
+  if (tokenPayload == null) {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  const userDao = new UserDao(di);
+  const user = await userDao.getLimitedById(tokenPayload.userId);
+  if (user == null) {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  user.emailVerifiedAt = Date.now();
+  await userDao.store(user);
+  return ResponseUtils_json(200, event, { status: "verified" });
+};
+
+const forgotPasswordEndpoint = Endpoint.build("/api/auth/forgotpassword");
+const forgotPasswordHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof forgotPasswordEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const email = normalizeEmail(getBodyJson(event).email);
+  if (!emailRegex.test(email)) {
+    return ResponseUtils_json(400, event, { error: "invalid_email" });
+  }
+  const emailAuthTokenDao = new EmailAuthTokenDao(di);
+  // Silently pretend to send while rate-limited so the limiter can't be used to
+  // spam an inbox with reset emails
+  if (await emailAuthTokenDao.bumpAttemptsAndCheckLimit(env, `forgot:${email}`)) {
+    return ResponseUtils_json(200, event, { status: "ok" });
+  }
+  const userDao = new UserDao(di);
+  const candidates = await userDao.getAllByEmail(email);
+  const match = candidates.find((u) => u.passwordHash != null);
+  if (match == null) {
+    const providers = Array.from(
+      new Set(candidates.flatMap((u) => [...(u.googleId ? ["Google"] : []), ...(u.appleId ? ["Apple"] : [])]))
+    );
+    if (providers.length > 0) {
+      return ResponseUtils_json(403, event, { error: "use_oauth", providers });
+    }
+    return ResponseUtils_json(403, event, { error: "account_not_found" });
+  }
+  const token = await emailAuthTokenDao.create(env, { type: "reset", userId: match.id }, 60 * 60);
+  try {
+    await di.ses.sendEmail({
+      destination: email,
+      source: "info@liftosaur.com",
+      subject: "Liftosaur - reset your password",
+      body:
+        `You (or someone else) requested a password reset for the Liftosaur account ${email}.\n\n` +
+        `To set a new password, open this link:\n\n` +
+        `${getWebUrl(event)}/resetpassword?token=${token}\n\n` +
+        `The link expires in 1 hour. If that wasn't you, just ignore this email - your password won't change.`,
+    });
+  } catch (e) {
+    di.log.log("Failed to send forgot-password email", e instanceof Error ? e.message : e);
+    return ResponseUtils_json(502, event, { error: "email_send_failed" });
+  }
+  return ResponseUtils_json(200, event, { status: "ok" });
+};
+
+const resetPasswordEndpoint = Endpoint.build("/api/auth/resetpassword");
+const resetPasswordHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof resetPasswordEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const bodyJson = getBodyJson(event);
+  const { token, password } = bodyJson;
+  if (typeof password !== "string" || password.length < minPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "invalid_password" });
+  }
+  if (password.length > maxPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "password_too_long" });
+  }
+  if (typeof token !== "string" || !token) {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  const tokenPayload = await new EmailAuthTokenDao(di).consume(env, token, ["reset"]);
+  if (tokenPayload == null || tokenPayload.type !== "reset") {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  const userDao = new UserDao(di);
+  const user = await userDao.getById(tokenPayload.userId, { historyLimit: 20 });
+  if (user == null) {
+    return ResponseUtils_json(400, event, { error: "invalid_token" });
+  }
+  user.passwordHash = await PasswordHash_hash(password);
+  // completing an emailed link proves inbox ownership just like the verify flow
+  user.emailVerifiedAt = user.emailVerifiedAt || Date.now();
+  await userDao.store(user);
+  await new EmailAuthTokenDao(di).clearAttempts(env, user.email);
+  // Deliberately no session: reset happens on a web page reached from an email
+  // link, so a web session wouldn't sign the (native-first) user into the app
+  // anyway and only confuses. They sign in fresh with the new password.
+  return ResponseUtils_json(200, event, { status: "ok" });
+};
+
+const changePasswordEndpoint = Endpoint.build("/api/auth/changepassword");
+const changePasswordHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof changePasswordEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const bodyJson = getBodyJson(event);
+  const { currentPassword, newPassword } = bodyJson;
+  const currentUserId = await getCurrentUserId(event, di);
+  if (currentUserId == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  if (typeof newPassword !== "string" || newPassword.length < minPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "invalid_password" });
+  }
+  if (newPassword.length > maxPasswordLength) {
+    return ResponseUtils_json(400, event, { error: "password_too_long" });
+  }
+  const userDao = new UserDao(di);
+  const user = await userDao.getLimitedById(currentUserId);
+  if (user == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  if (user.passwordHash != null) {
+    if (typeof currentPassword !== "string" || !(await PasswordHash_verify(currentPassword, user.passwordHash))) {
+      return ResponseUtils_json(403, event, { error: "invalid_credentials" });
+    }
+  }
+  user.passwordHash = await PasswordHash_hash(newPassword);
+  await userDao.store(user);
+  return ResponseUtils_json(200, event, { status: "ok" });
+};
+
+const getVerifyEmailPageEndpoint = Endpoint.build("/verifyemail", { token: "string?" });
+const getVerifyEmailPageHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getVerifyEmailPageEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di } = payload;
+  return {
+    statusCode: 200,
+    body: renderVerifyEmailHtml(di.fetch, params.token),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getResetPasswordPageEndpoint = Endpoint.build("/resetpassword", { token: "string?" });
+const getResetPasswordPageHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getResetPasswordPageEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di } = payload;
+  return {
+    statusCode: 200,
+    body: renderResetPasswordHtml(di.fetch, params.token),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getHistoryEndpoint = Endpoint.build("/api/history", {
+  after: "number?",
+  limit: "number?",
+  ids: "string?",
+  userid: "string?",
+  key: "string?",
+});
+const getHistoryHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getHistoryEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const { userId, error } = await getAdminTargetOrCurrentUserId(event, di, params);
+  if (error === "invalid_admin_key") {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  if (userId != null) {
+    const userDao = new UserDao(di);
+    if (params.ids != null) {
+      const ids = HistoryIds_parse(params.ids);
+      if (!ids.success) {
+        return ResponseUtils_json(400, event, { error: ids.error });
+      }
+      const history = await userDao.getHistoryByUserId(userId, { ids: ids.data, consistentRead: true });
+      return ResponseUtils_json(200, event, { history });
+    }
+    const history = await userDao.getHistoryByUserId(userId, { after: params.after, limit: params.limit });
+    return ResponseUtils_json(200, event, { history });
+  }
+  return ResponseUtils_json(400, event, { error: "Not Authorized" });
+};
+
+const signoutEndpoint = Endpoint.build("/api/signout");
+const signoutHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof signoutEndpoint> = async ({ payload }) => {
+  const { event } = payload;
+  return ResponseUtils_json(200, event, {}, { "set-cookie": ResponseUtils_clearSessionCookie() });
+};
+
+const postSaveProgramEndpoint = Endpoint.build("/api/program");
+const postSaveProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postSaveProgramEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const currentUser = await getCurrentLimitedUser(event, di);
+  if (currentUser != null) {
+    const bodyJson = getBodyJson(event);
+    const deviceId = bodyJson.deviceId as string | undefined;
+    const source = bodyJson.source as string | undefined;
+    const exportedProgram: IExportedProgram = bodyJson.program;
+    const basePlannerVersion = isFieldVersion(bodyJson.base) ? bodyJson.base : undefined;
+    const userDao = new UserDao(di);
+    const eventDao = new EventDao(di);
+    const migration = await userDao.migrateStoredStorage(currentUser, deviceId || VersionTrackerUtils_SERVER_DEVICE_ID);
+    if (!migration.success) {
+      return ResponseUtils_json(500, event, { error: "Corrupted storage!" });
+    }
+    const user = migration.data.user;
+    const programs = await userDao.getProgramsByUserId(user.id);
+    const oldStorageResult = Storage_get({ ...user.storage, programs });
+    if (!oldStorageResult.success) {
+      di.log.log("Program Save: Error loading old storage", oldStorageResult.error);
+      return ResponseUtils_json(500, event, { error: "Corrupted storage!" });
+    }
+    const oldStorage = oldStorageResult.data;
+    if (oldStorage.version !== exportedProgram.version) {
+      di.log.log(`Program Save: Version mismatch! Old: ${oldStorage.version}, New: ${exportedProgram.version}.`);
+      return ResponseUtils_json(400, event, { error: "Version mismatch! Please refresh the page." });
+    }
+    const programsDeletedMap = (oldStorage._versions?.programs as ICollectionVersions | undefined)?.deleted || {};
+    const submittedClonedAt = exportedProgram.program.clonedAt;
+    if (submittedClonedAt != null && submittedClonedAt in programsDeletedMap) {
+      di.log.log(`Program Save: Stale clonedAt ${submittedClonedAt} for program ${exportedProgram.program.id}.`);
+      await eventDao.post({
+        type: "event",
+        name: "save-program-www-stale-cloned-at",
+        userId: user.id,
+        commithash: process.env.COMMIT_HASH ?? "",
+        timestamp: Date.now(),
+        isMobile: false,
+        extra: {
+          programId: exportedProgram.program.id,
+          clonedAt: submittedClonedAt,
+        },
+      });
+      return ResponseUtils_json(409, event, {
+        error: "Your program is out of date. Please refresh the page and try again.",
+      });
+    }
+    const storedPlannerVersion = FieldRevision_programPlanner(oldStorage._versions, submittedClonedAt);
+    if (FieldRevision_isStale(storedPlannerVersion, basePlannerVersion)) {
+      di.log.log(`Program Save: Stale planner for program ${exportedProgram.program.id}.`);
+      return ResponseUtils_json(409, event, {
+        error: "Your program is out of date. Please refresh the page and try again.",
+      });
+    }
+    // The web editor has no UI for changing nextDay, but submits a snapshot of the program
+    // from page load time - it'd overwrite nextDay advanced by workouts since then
+    const serverProgram = oldStorage.programs.find((p) => p.id === exportedProgram.program.id);
+    if (serverProgram != null) {
+      exportedProgram.program.nextDay = serverProgram.nextDay;
+    }
+    const originalId = Date.now();
+    const newStorage: IPartialStorage = {
+      ...oldStorage,
+      programs: CollectionUtils_setBy(oldStorage.programs, "id", exportedProgram.program.id, exportedProgram.program),
+      settings: Settings_applyExportedProgram(oldStorage.settings, exportedProgram),
+      originalId,
+    };
+    di.log.log("Device id", deviceId);
+    const newVersions = Storage_updateVersions(
+      oldStorage,
+      newStorage,
+      deviceId || VersionTrackerUtils_SERVER_DEVICE_ID
+    );
+    const saveVersions = eventDao.post({
+      type: "event",
+      name: "save-program-www-versions",
+      userId: user.id,
+      commithash: process.env.COMMIT_HASH ?? "",
+      timestamp: Date.now(),
+      isMobile: false,
+      extra: {
+        versions: JSON.stringify(newVersions.programs),
+        name: exportedProgram.program.name,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        suspciousDeletion: JSON.stringify((global as any).suspiciousDeletion),
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((global as any).suspiciousDeletion) {
+      await eventDao.post({
+        type: "event",
+        name: "ls-suspicious-deletion-www",
+        userId: user.id,
+        commithash: process.env.COMMIT_HASH ?? "",
+        timestamp: Date.now(),
+        isMobile: false,
+        extra: {
+          programId: exportedProgram.program.id,
+          name: exportedProgram.program.name,
+          clonedAt: exportedProgram.program.clonedAt || "none",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          suspciousDeletion: JSON.stringify((global as any).suspiciousDeletion),
+          programs: JSON.stringify(
+            newStorage.programs?.map((p) => {
+              const { planner, ...cleanedProgram } = p;
+              return cleanedProgram;
+            })
+          ),
+        },
+      });
+    }
+    newStorage._versions = newVersions;
+    delete newStorage.programs;
+    user.storage = newStorage;
+    const eventPost = eventDao.post({
+      type: "event",
+      name: "save-program-www",
+      userId: user.id,
+      commithash: process.env.COMMIT_HASH ?? "",
+      timestamp: Date.now(),
+      isMobile: false,
+      extra: { programId: exportedProgram.program.id, clonedAt: exportedProgram.program.clonedAt || "none" },
+    });
+    await Promise.all([
+      userDao.saveProgram(user.id, exportedProgram.program),
+      userDao.store(user),
+      userDao.saveProgramRevision(user.id, exportedProgram.program),
+      eventPost,
+      saveVersions,
+    ]);
+    await PushSync_notify(di, user.id, deviceId, originalId);
+    if (source === "program-details") {
+      await new LogDao(di).recordAction(user.id, "ls-add-program-to-account", getLandingPageCookie(event));
+    }
+    return ResponseUtils_json(200, event, {
+      data: {
+        id: exportedProgram.program.id,
+        plannerVersion: FieldRevision_programPlanner(newVersions, exportedProgram.program.clonedAt),
+      },
+    });
+  }
+  return ResponseUtils_json(400, event, { error: "Not Authorized" });
+};
+
+const postSaveSettingsEndpoint = Endpoint.build("/api/settings");
+const postSaveSettingsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postSaveSettingsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const user = await getCurrentLimitedUser(event, di);
+  if (user == null) {
+    return ResponseUtils_json(400, event, { error: "Not Authorized" });
+  }
+  const bodyJson = getBodyJson(event);
+  const deviceId = bodyJson.deviceId as string | undefined;
+  const version = bodyJson.version as string | undefined;
+  const updateResult = Storage_validate(bodyJson.settings, VWebEditorSettings, "settings");
+  if (!updateResult.success) {
+    di.log.log("Settings Save: Invalid payload", updateResult.error);
+    return ResponseUtils_json(400, event, { error: "Invalid settings" });
+  }
+  const deletedExerciseDataKeysResult = Storage_validate(
+    bodyJson.deletedExerciseDataKeys ?? [],
+    VDeletedSettingsKeys,
+    "deletedExerciseDataKeys"
+  );
+  const deletedStarredExerciseKeysResult = Storage_validate(
+    bodyJson.deletedStarredExerciseKeys ?? [],
+    VDeletedSettingsKeys,
+    "deletedStarredExerciseKeys"
+  );
+  const deletedMuscleGroupKeysResult = Storage_validate(
+    bodyJson.deletedMuscleGroupKeys ?? [],
+    VDeletedSettingsKeys,
+    "deletedMuscleGroupKeys"
+  );
+  if (
+    !deletedExerciseDataKeysResult.success ||
+    !deletedStarredExerciseKeysResult.success ||
+    !deletedMuscleGroupKeysResult.success
+  ) {
+    di.log.log(
+      "Settings Save: Invalid deleted keys",
+      deletedExerciseDataKeysResult.success ? undefined : deletedExerciseDataKeysResult.error,
+      deletedStarredExerciseKeysResult.success ? undefined : deletedStarredExerciseKeysResult.error,
+      deletedMuscleGroupKeysResult.success ? undefined : deletedMuscleGroupKeysResult.error
+    );
+    return ResponseUtils_json(400, event, { error: "Invalid settings" });
+  }
+  const deleted = {
+    exerciseDataKeys: deletedExerciseDataKeysResult.data,
+    starredExerciseKeys: deletedStarredExerciseKeysResult.data,
+    muscleGroupKeys: deletedMuscleGroupKeysResult.data,
+  };
+  const oldStorageResult = Storage_get(user.storage);
+  if (!oldStorageResult.success) {
+    di.log.log("Settings Save: Error loading old storage", oldStorageResult.error);
+    return ResponseUtils_json(500, event, { error: "Corrupted storage!" });
+  }
+  if (version != null && oldStorageResult.data.version !== version) {
+    di.log.log(`Settings Save: Version mismatch! Old: ${oldStorageResult.data.version}, New: ${version}.`);
+    return ResponseUtils_json(400, event, { error: "Version mismatch! Please refresh the page." });
+  }
+  const userDao = new UserDao(di);
+  // The edit has to be versioned against the migrated clocks, or an offline client's migrated copy beats it.
+  const migration = await userDao.migrateStoredStorage(user, deviceId || VersionTrackerUtils_SERVER_DEVICE_ID);
+  if (!migration.success) {
+    return ResponseUtils_json(500, event, { error: "Corrupted storage!" });
+  }
+  await userDao.applyStorageUpdate(
+    migration.data.user,
+    (old) => ({
+      ...old,
+      settings: Settings_applyWebEditorSettings(old.settings, updateResult.data, deleted),
+    }),
+    deviceId || VersionTrackerUtils_SERVER_DEVICE_ID
+  );
+  return ResponseUtils_json(200, event, { data: {} });
+};
+
+async function applyDashboardWebSave(
+  payload: IPayload,
+  dashboardId: string,
+  decide: (storage: IStorage) => IDashboardWebSaveResult
+): Promise<APIGatewayProxyResult> {
+  const { event, di } = payload;
+  const currentUser = await getCurrentLimitedUser(event, di);
+  if (currentUser == null) {
+    return ResponseUtils_json(401, event, { error: "Not Authorized" });
+  }
+  const bodyJson = event.body ? getBodyJson(event) : {};
+  const deviceId = typeof bodyJson.deviceId === "string" ? bodyJson.deviceId : VersionTrackerUtils_SERVER_DEVICE_ID;
+  const result = await DashboardStorageWrite_apply(di, currentUser, deviceId, decide);
+  if (!result.success) {
+    return ResponseUtils_json(result.error.status, event, { error: result.error.message });
+  }
+  return ResponseUtils_json(200, event, {
+    data: { id: dashboardId, base: FieldRevision_dashboardText(result.data.storage._versions, dashboardId) },
+  });
+}
+
+const postCreateDashboardEndpoint = Endpoint.build("/api/dashboards");
+const postCreateDashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postCreateDashboardEndpoint
+> = async ({ payload }) => {
+  const body = getBodyJson(payload.event);
+  const id = typeof body.dashboard?.id === "string" ? body.dashboard.id : "";
+  return applyDashboardWebSave(payload, id, (storage) => DashboardWebSave_create(storage, body));
+};
+
+const postUpdateDashboardEndpoint = Endpoint.build("/api/dashboard/:id");
+const postUpdateDashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postUpdateDashboardEndpoint
+> = async ({ payload, match: { params } }) => {
+  const body = getBodyJson(payload.event);
+  return applyDashboardWebSave(payload, params.id, (storage) => DashboardWebSave_update(storage, params.id, body));
+};
+
+const postSelectDashboardEndpoint = Endpoint.build("/api/dashboard/:id/current");
+const postSelectDashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postSelectDashboardEndpoint
+> = async ({ payload, match: { params } }) => {
+  return applyDashboardWebSave(payload, params.id, (storage) => DashboardWebSave_select(storage, params.id));
+};
+
+const deleteDashboardEndpoint = Endpoint.build("/api/dashboard/:id");
+const deleteDashboardHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteDashboardEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  return applyDashboardWebSave(payload, params.id, (storage) => DashboardWebSave_delete(storage, params.id));
+};
+
+const getStatsEndpoint = Endpoint.build("/api/stats");
+const getStatsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getStatsEndpoint> = async ({ payload }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (userId == null) {
+    return ResponseUtils_json(401, event, { error: "Not Authorized" });
+  }
+  const stats = await new UserDao(di).getStatsByUserId(userId);
+  return ResponseUtils_json(200, event, { stats });
+};
+
+const deleteProgramEndpoint = Endpoint.build("/api/program/:id");
+const deleteProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const user = await getCurrentLimitedUser(event, di);
+  if (user != null) {
+    const userDao = new UserDao(di);
+    const eventDao = new EventDao(di);
+    const program = await userDao.getProgram(user.id, params.id);
+    if (program == null) {
+      return ResponseUtils_json(404, event, { error: "Not Found" });
+    }
+    const eventPost = eventDao.post({
+      type: "event",
+      name: "delete-program-www",
+      commithash: process.env.COMMIT_HASH ?? "",
+      userId: user.id,
+      timestamp: Date.now(),
+      isMobile: false,
+      extra: { programId: program.id, clonedAt: program.clonedAt || "none" },
+    });
+    const newStorage = {
+      ...user.storage,
+      _versions: program.clonedAt
+        ? {
+            ...user.storage._versions,
+            programs: {
+              ...c<ICollectionVersions>(user.storage._versions?.programs || {}),
+              deleted: {
+                ...c<ICollectionVersions>(user.storage._versions?.programs || {}).deleted,
+                [program.clonedAt]: Date.now(),
+              },
+            },
+          }
+        : user.storage._versions,
+      originalId: Date.now(),
+    };
+    user.storage = newStorage;
+    await Promise.all([userDao.deleteProgram(user.id, program.id), userDao.store(user), eventPost]);
+    await PushSync_notify(di, user.id, undefined, newStorage.originalId);
+    return ResponseUtils_json(200, event, { data: { id: program.id } });
+  }
+  return ResponseUtils_json(400, event, { error: "Not Authorized" });
+};
+
+const getProgramsEndpoint = Endpoint.build("/api/programs");
+const getProgramsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProgramsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const programs = await new ProgramDao(di).getAll();
+  return ResponseUtils_json(200, event, { programs });
+};
+
+const getHistoryRecordEndpoint = Endpoint.build("/api/record", { user: "string?", id: "number?" });
+const getHistoryRecordHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getHistoryRecordEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const error: { message?: string } = {};
+  if (params.user != null && params.id != null && !isNaN(params.id)) {
+    const result = await new UserDao(di).getById(params.user);
+    if (result != null) {
+      const storage: IStorage = result.storage;
+      const history = storage.history.map(RecordShare_withoutNotes);
+      const historyRecord = history.find((hi) => hi.id === params.id);
+      if (historyRecord != null) {
+        return {
+          statusCode: 200,
+          body: renderRecordHtml(
+            di.fetch,
+            { history, record: historyRecord, settings: RecordShare_settingsWithoutNotes(storage.settings) },
+            params.user,
+            params.id
+          ),
+          headers: { "content-type": "text/html" },
+        };
+      } else {
+        error.message = "Can't find history record";
+      }
+    } else {
+      error.message = "Can't find user";
+    }
+  } else {
+    error.message = "Missing required params - 'user' or 'id'";
+  }
+  return ResponseUtils_json(400, event, { error });
+};
+
+const getHistoryRecordImageEndpoint = Endpoint.build("/api/recordimage", {
+  user: "string",
+  id: "number",
+});
+const getHistoryRecordImageHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getHistoryRecordImageEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return ImageCacher_cache(di, event, `historyrecordimage${event.path}-${params.user}-${params.id}.png`, async () => {
+    const result = await new UserDao(di).getById(params.user);
+    if (result != null) {
+      const imageResult = await recordImage(result.storage, params.id);
+      if (imageResult.success) {
+        return { success: true, data: imageResult.data };
+      } else {
+        return { success: false, error: imageResult.error };
+      }
+    } else {
+      return { success: false, error: "Can't find user" };
+    }
+  });
+};
+
+const getProgramImageEndpoint = Endpoint.build("/api/programimage/:id");
+const getProgramImageHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProgramImageEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return ImageCacher_cache(di, event, `programimage${event.path}-${params.id}.png`, async () => {
+    const result = await new ProgramDao(di).getById(params.id);
+    if (result != null) {
+      const imageResult = await new ProgramImageGenerator().generate({
+        indexEntry: result.indexEntry,
+        fetch: di.fetch,
+      });
+      if (imageResult.success) {
+        return { success: true, data: imageResult.data };
+      } else {
+        return { success: false, error: imageResult.error };
+      }
+    } else {
+      return { success: false, error: "Can't find program" };
+    }
+  });
+};
+
+const postAddFreeUserEndpoint = Endpoint.build("/api/addfreeuser/:id", { key: "string" });
+const postAddFreeUserHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postAddFreeUserEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  if (params.key === (await di.secrets.getApiKey())) {
+    await new FreeUserDao(di).create(params.id, Date.now() + 1000 * 60 * 60 * 24 * 365, false);
+    return ResponseUtils_json(200, event, { data: "ok" });
+  } else {
+    return ResponseUtils_json(401, event, {});
+  }
+};
+
+const getAdminCheckEndpoint = Endpoint.build("/api/admin/check", { key: "string" });
+const getAdminCheckHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAdminCheckEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  if (params.key === (await di.secrets.getApiKey())) {
+    return ResponseUtils_json(200, event, { data: "ok" });
+  } else {
+    return ResponseUtils_json(401, event, {});
+  }
+};
+
+const postCreateCouponEndpoint = Endpoint.build("/api/coupon/:ttl", { key: "string", info: "string?" });
+const postCreateCouponHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postCreateCouponEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const ttlMs = parseInt(params.ttl, 10);
+  if (!isNaN(ttlMs) && params.key === (await di.secrets.getApiKey())) {
+    const coupon = await new CouponDao(di).create({ ttlMs, info: params.info });
+    return ResponseUtils_json(200, event, { data: coupon });
+  } else {
+    return ResponseUtils_json(401, event, {});
+  }
+};
+
+const postClaimCouponEndpoint = Endpoint.build("/api/coupon/claim/:code");
+const postClaimCouponHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postClaimCouponEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const couponDao = new CouponDao(di);
+  const bodyJson = getBodyJson(event);
+  const { platform } = bodyJson;
+  const currentUserId = await getCurrentUserId(payload.event, payload.di);
+
+  const coupon = await couponDao.get(params.code);
+  if (!coupon) {
+    return ResponseUtils_json(404, event, { error: "coupon_not_found" });
+  }
+
+  if (coupon.isDisabled) {
+    return ResponseUtils_json(404, event, { error: "coupon_disabled" });
+  }
+
+  if (coupon.expiresAt != null && Date.now() > coupon.expiresAt) {
+    return ResponseUtils_json(404, event, { error: "coupon_expired" });
+  }
+
+  if (coupon.isClaimed) {
+    return ResponseUtils_json(400, event, { error: "coupon_already_claimed" });
+  }
+
+  const data = couponDao.getData(coupon);
+  if (platform === "ios" && data) {
+    const applePromoSigner = new ApplePromotionalOfferSigner(di);
+    const monthlyOffer = await applePromoSigner.generateSignature(
+      data.apple.monthly.offerId,
+      "liftosaur",
+      data.apple.monthly.productId
+    );
+    const yearlyOffer = await applePromoSigner.generateSignature(
+      data.apple.yearly.offerId,
+      "liftosaur",
+      data.apple.yearly.productId
+    );
+    return ResponseUtils_json(200, event, {
+      data: { affiliate: coupon.affiliate, appleOffer: { monthly: monthlyOffer, yearly: yearlyOffer } },
+    });
+  }
+
+  if (platform === "android" && data) {
+    const googleOffer = {
+      monthly: {
+        offerId: data.google.monthly.offerId,
+        productId: data.google.monthly.productId,
+      },
+      yearly: {
+        offerId: data.google.yearly.offerId,
+        productId: data.google.yearly.productId,
+      },
+    };
+    return ResponseUtils_json(200, event, { data: { affiliate: coupon.affiliate, googleOffer } });
+  }
+  if (data) {
+    return ResponseUtils_json(400, event, { error: "wrong_platform" });
+  }
+
+  if (currentUserId == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+
+  await couponDao.claim(coupon);
+  const freeuser = await new FreeUserDao(di).create(currentUserId, Date.now() + coupon.ttlMs, true, coupon.code);
+  return ResponseUtils_json(200, event, {
+    data: { key: freeuser.key, expires: freeuser.expires },
+  });
+};
+
+const logEndpoint = Endpoint.build("/api/log");
+const logHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof logEndpoint> = async ({ payload }) => {
+  const { event, di } = payload;
+  const {
+    user,
+    action,
+    detail,
+    affiliates,
+    platform,
+    subscriptions,
+    referrer,
+    landingPage: bodyLandingPage,
+  } = getBodyJson(event);
+  const landingPage =
+    typeof bodyLandingPage === "string" && bodyLandingPage.startsWith("/") && bodyLandingPage.length <= 256
+      ? bodyLandingPage
+      : getLandingPageCookie(event);
+  let data: { result: "ok" | "error" };
+  if (user && action) {
+    await new LogDao(di).increment(
+      user,
+      action,
+      platform,
+      subscriptions,
+      affiliates,
+      referrer,
+      landingPage,
+      typeof detail === "string" ? detail : undefined
+    );
+    data = { result: "ok" };
+  } else {
+    data = { result: "error" };
+  }
+  return ResponseUtils_json(200, event, { data });
+};
+
+const postVerifySubscriptionKeyEndpoint = Endpoint.build("/api/verifysubscriptionkey");
+const postVerifySubscriptionKeyHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postVerifySubscriptionKeyEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const env = Utils_getEnv();
+  const { user, key, enforce } = getBodyJson(event);
+  let clear: boolean | undefined;
+  if (user && key != null && (env === "prod" || enforce)) {
+    const fetchedKey = await new FreeUserDao(di).verifyKey(user);
+    if (fetchedKey !== key) {
+      clear = true;
+    }
+  }
+  return ResponseUtils_json(200, event, { data: { result: "ok", clear } });
+};
+
+// Must never be cached - it's per-viewer.
+const getGeoEndpoint = Endpoint.build("/api/geo");
+const getGeoHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getGeoEndpoint> = async ({ payload }) => {
+  const { event } = payload;
+  const country = event.headers["cloudfront-viewer-country"] || event.headers["CloudFront-Viewer-Country"] || null;
+  const consentMode = ConsentMode_fromCountry(country);
+  return ResponseUtils_json(200, event, { country, consentMode }, { "cache-control": "no-store" });
+};
+
+const postBatchEventsEndpoint = Endpoint.build("/api/batchevents");
+const postBatchEventsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postBatchEventsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const eventDao = new EventDao(di);
+  const { events: eventsRaw } = getBodyJson(event) as { events: { id: string; data: string }[] };
+  const events = eventsRaw.reduce<Record<string, IEventPayload>>((memo, e) => {
+    memo[e.id] = JSON.parse(e.data) as IEventPayload;
+    return memo;
+  }, {});
+  let successfulIds: string[] = [];
+  di.log.log(
+    "Storing events: ",
+    ObjectUtils_values(events)
+      .map((e) => (e.type === "event" ? e.name : e.type))
+      .join(", ")
+  );
+
+  const logIds = ObjectUtils_keys(events).filter((id) => events[id].type === "log");
+  const eventIds = ObjectUtils_keys(events).filter((id) => events[id].type !== "log");
+
+  const idGroups = CollectionUtils_inGroupsOf(25, eventIds);
+  for (const group of idGroups) {
+    const eventsToPost: IEventPayload[] = [];
+    for (const id of group) {
+      const event2 = events[id];
+      let attempts = 0;
+      while (attempts < 5 && eventsToPost.some((e) => e.timestamp === event2.timestamp)) {
+        event2.timestamp += 1;
+        attempts += 1;
+      }
+      eventsToPost.push(event2);
+    }
+    try {
+      await eventDao.batchPost(CollectionUtils_uniqBy(eventsToPost, "timestamp"));
+      successfulIds = successfulIds.concat(group);
+    } catch (error) {
+      di.log.log("Error posting batch events", error);
+    }
+  }
+
+  // LogDao.increment is a read-modify-write, so same-(user,action) logs in one batch must run
+  // sequentially or they'd clobber each other's count.
+  const logDao = new LogDao(di);
+  for (const id of logIds) {
+    const e = events[id];
+    if (e.type !== "log") {
+      continue;
+    }
+    try {
+      await logDao.increment(
+        e.userId || "",
+        e.action,
+        e.platform,
+        e.subscriptions as ("apple" | "google")[],
+        e.affiliates,
+        e.referrer,
+        e.landingPage,
+        e.detail
+      );
+      successfulIds = successfulIds.concat(id);
+    } catch (error) {
+      di.log.log("Error posting batch log", error);
+    }
+  }
+
+  return ResponseUtils_json(200, event, { acknowledged: successfulIds });
+};
+
+const postApiKeysEndpoint = Endpoint.build("/api/apikeys");
+const postApiKeysHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postApiKeysEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const body = getBodyJson(event);
+  const name = (body.name as string) || "API Key";
+  const apiKeyDao = new ApiKeyDao(di);
+  const dao = await apiKeyDao.create(userId, name);
+  return ResponseUtils_json(200, event, { data: { key: dao.key, name: dao.name, createdAt: dao.createdAt } });
+};
+
+const getApiKeysEndpoint = Endpoint.build("/api/apikeys");
+const getApiKeysHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getApiKeysEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const apiKeyDao = new ApiKeyDao(di);
+  const keys = await apiKeyDao.listByUserId(userId);
+  return ResponseUtils_json(200, event, { data: { keys } });
+};
+
+const deleteApiKeyEndpoint = Endpoint.build("/api/apikeys/:key");
+const deleteApiKeyHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteApiKeyEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const apiKeyDao = new ApiKeyDao(di);
+  const existing = await apiKeyDao.getByKey(params.key);
+  if (!existing || existing.userId !== userId) {
+    return ResponseUtils_json(404, event, { error: { code: "not_found", message: "API key not found" } });
+  }
+  await apiKeyDao.deleteKey(params.key);
+  return ResponseUtils_json(200, event, { data: { deleted: true } });
+};
+
+const postPushTokenEndpoint = Endpoint.build("/api/pushtoken");
+const postPushTokenHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postPushTokenEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const registration = PushSync_validateRegistration(getBodyJson(event));
+  if (!registration.success) {
+    return ResponseUtils_json(400, event, { error: registration.error });
+  }
+  await PushSync_register(di, userId, registration.data);
+  return ResponseUtils_json(200, event, {});
+};
+
+const deletePushTokenEndpoint = Endpoint.build("/api/pushtoken/:deviceId");
+const deletePushTokenHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deletePushTokenEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  await PushSync_unregister(di, userId, params.deviceId);
+  return ResponseUtils_json(200, event, { data: { deleted: true } });
+};
+
+const postFollowInviteEndpoint = Endpoint.build("/api/follow/invites");
+const postFollowInviteHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postFollowInviteEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const invite = await new FollowInviteDao(di).create(userId);
+  const url = `${process.env.HOST || "https://www.liftosaur.com"}/f/${invite.token}`;
+  return ResponseUtils_json(200, event, { data: { token: invite.token, url, expiresAt: invite.expiresAt } });
+};
+
+const getFollowInviteEndpoint = Endpoint.build("/api/follow/invites/:token");
+const getFollowInviteHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getFollowInviteEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const invite = await new FollowInviteDao(di).get(params.token);
+  if (invite == null) {
+    return ResponseUtils_json(404, event, { error: "notfound" });
+  }
+  const nicknames = await new UserDao(di).getNicknamesByIds([invite.inviterId]);
+  return ResponseUtils_json(200, event, {
+    data: { nickname: nicknames[invite.inviterId], isSelf: invite.inviterId === userId },
+  });
+};
+
+const postFollowInviteRequestEndpoint = Endpoint.build("/api/follow/invites/:token/request");
+const postFollowInviteRequestHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postFollowInviteRequestEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const result = await new FollowInviteDao(di).consumeIntoRequest(params.token, userId, Follows_newRequestId());
+  if (!result.success) {
+    const status = result.error === "notfound" ? 404 : result.error === "self" ? 400 : 409;
+    return ResponseUtils_json(status, event, { error: result.error });
+  }
+  const { row, isCreated } = result.data;
+  await FriendPush_followRequested(di, row, isCreated);
+  const nicknames = await new UserDao(di).getNicknamesByIds([row.followeeId]);
+  return ResponseUtils_json(200, event, {
+    data: {
+      requestId: row.requestId,
+      nickname: nicknames[row.followeeId],
+      createdAt: row.createdAt,
+      status: row.status,
+    },
+  });
+};
+
+const getFollowsEndpoint = Endpoint.build("/api/follows");
+const getFollowsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getFollowsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+function followsErrorStatus(error: IFollowsError): number {
+  return error === "notfound" ? 404 : error === "forbidden" ? 403 : 409;
+}
+
+const postFollowApproveEndpoint = Endpoint.build("/api/follows/requests/:requestId/approve");
+const postFollowApproveHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postFollowApproveEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const body = getBodyJson(event);
+  const permissions = Follow_parsePermissions(body?.permissions) ?? Follow_defaultPermissions;
+  const result = await Follows_approve(di, userId, params.requestId, permissions, body?.followBack === true);
+  if (!result.success) {
+    return ResponseUtils_json(followsErrorStatus(result.error), event, { error: result.error });
+  }
+  await FriendPush_followApproved(di, result.data.row, result.data.isFollowBackRequested);
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+const deleteFollowRequestEndpoint = Endpoint.build("/api/follows/requests/:requestId");
+const deleteFollowRequestHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteFollowRequestEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const result = await Follows_removeRequest(di, userId, params.requestId);
+  if (!result.success) {
+    return ResponseUtils_json(followsErrorStatus(result.error), event, { error: result.error });
+  }
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+const putFollowerPermissionsEndpoint = Endpoint.build("/api/follows/followers/:userId/permissions");
+const putFollowerPermissionsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putFollowerPermissionsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const patch = Follow_parsePermissionsPatch(getBodyJson(event)?.permissions);
+  if (patch == null) {
+    return ResponseUtils_json(400, event, { error: "Invalid permissions" });
+  }
+  const result = await Follows_setPermissions(di, userId, params.userId, patch);
+  if (!result.success) {
+    return ResponseUtils_json(followsErrorStatus(result.error), event, { error: result.error });
+  }
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+const deleteFollowingEndpoint = Endpoint.build("/api/follows/following/:userId");
+const deleteFollowingHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteFollowingEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  await new FollowDao(di).remove(userId, params.userId);
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+const deleteFollowerEndpoint = Endpoint.build("/api/follows/followers/:userId");
+const deleteFollowerHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteFollowerEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  await new FollowDao(di).remove(params.userId, userId);
+  return ResponseUtils_json(200, event, { data: await Follows_load(di, userId) });
+};
+
+const getFeedEndpoint = Endpoint.build("/api/feed", { cursor: "string?", owners: "string?", limit: "number?" });
+const getFeedHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getFeedEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const owners = params.owners != null ? params.owners.split(",").filter((o) => o.length > 0) : undefined;
+  const feed = await Feed_load(di, userId, { cursor: params.cursor, owners, limit: params.limit ?? 20 });
+  return ResponseUtils_json(200, event, { data: feed });
+};
+
+function apiResultToJson<T>(event: APIGatewayProxyEvent, result: IEither<T, IApiError>): APIGatewayProxyResult {
+  return result.success
+    ? ResponseUtils_json(200, event, { data: result.data })
+    : ResponseUtils_json(result.error.status, event, { error: result.error.message, code: result.error.code });
+}
+
+const getFriendProgramsEndpoint = Endpoint.build("/api/friends/:userId/programs");
+const getFriendProgramsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getFriendProgramsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  return apiResultToJson(event, await FriendPrograms_list(di, userId, params.userId));
+};
+
+const getFriendProgramEndpoint = Endpoint.build("/api/friends/:userId/programs/:id");
+const getFriendProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getFriendProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  return apiResultToJson(event, await FriendPrograms_get(di, userId, params.userId, params.id));
+};
+
+const postFriendProgramEndpoint = Endpoint.build("/api/friends/:userId/programs/:id");
+const postFriendProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postFriendProgramEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const body = getBodyJson(event) ?? {};
+  return apiResultToJson(
+    event,
+    await FriendPrograms_update(di, userId, params.userId, params.id, { text: body.text, base: body.base })
+  );
+};
+
+const getProgramEditsEndpoint = Endpoint.build("/api/program-edits");
+const getProgramEditsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProgramEditsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  return ResponseUtils_json(200, event, { data: await FriendPrograms_listEdits(di, userId) });
+};
+
+const getProgramEditsForProgramEndpoint = Endpoint.build("/api/program-edits/:programId");
+const getProgramEditsForProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramEditsForProgramEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  return ResponseUtils_json(200, event, { data: await FriendPrograms_listEditsFor(di, userId, params.programId) });
+};
+
+const postProgramEditsSeenEndpoint = Endpoint.build("/api/program-edits/seen");
+const postProgramEditsSeenHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postProgramEditsSeenEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  await FriendPrograms_markEditsSeen(di, userId, getBodyJson(event)?.programId);
+  return ResponseUtils_json(200, event, { data: await FriendPrograms_listEdits(di, userId) });
+};
+
+const getOwnReactionsEndpoint = Endpoint.build("/api/reactions", { ids: "string" });
+const getOwnReactionsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getOwnReactionsEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const ids = Array.from(
+    new Set(
+      params.ids
+        .split(",")
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id))
+    )
+  ).slice(0, 50);
+  const byKey = await Feed_summarizeReactions(
+    di,
+    userId,
+    ids.map((recordId) => ({ ownerId: userId, recordId }))
+  );
+  const byRecordId: Partial<Record<number, IReactionSummary>> = {};
+  for (const recordId of ids) {
+    const summary = byKey[FeedWorkout_key(userId, recordId)];
+    if (summary != null && summary.total > 0) {
+      byRecordId[recordId] = summary;
+    }
+  }
+  return ResponseUtils_json(200, event, { data: byRecordId });
+};
+
+async function reactionAccess(
+  di: IDI,
+  actorId: string,
+  ownerId: string,
+  recordId: number
+): Promise<{ kind: "ok"; record: IHistoryRecord } | { kind: "forbidden" } | { kind: "notfound" }> {
+  const row = actorId === ownerId ? undefined : await new FollowDao(di).get(actorId, ownerId);
+  if (!FollowAccess_canReact(actorId, ownerId, row)) {
+    return { kind: "forbidden" };
+  }
+  const record = await new HistoryRecordsDao(di).get(ownerId, recordId);
+  return record != null ? { kind: "ok", record } : { kind: "notfound" };
+}
+
+const putReactionEndpoint = Endpoint.build("/api/reactions/:ownerId/:recordId");
+const putReactionHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof putReactionEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const recordId = Number(params.recordId);
+  const reaction = getBodyJson(event)?.reaction;
+  if (!Number.isFinite(recordId) || !Reactions_isReaction(reaction)) {
+    return ResponseUtils_json(400, event, { error: "Invalid reaction" });
+  }
+  const access = await reactionAccess(di, userId, params.ownerId, recordId);
+  if (access.kind !== "ok") {
+    return ResponseUtils_json(access.kind === "forbidden" ? 403 : 404, event, { error: access.kind });
+  }
+  const { isNew } = await new ReactionDao(di).put({
+    ownerId: params.ownerId,
+    recordId,
+    reactorId: userId,
+    reaction,
+    createdAt: Date.now(),
+  });
+  await FriendPush_reactionAdded(di, { ownerId: params.ownerId, reactorId: userId, record: access.record, isNew });
+  return ResponseUtils_json(200, event, { data: { reaction } });
+};
+
+const deleteReactionEndpoint = Endpoint.build("/api/reactions/:ownerId/:recordId");
+const deleteReactionHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteReactionEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Not authenticated" });
+  }
+  const recordId = Number(params.recordId);
+  if (!Number.isFinite(recordId)) {
+    return ResponseUtils_json(400, event, { error: "Invalid record" });
+  }
+  const isRemoved = await new ReactionDao(di).remove(params.ownerId, recordId, userId);
+  if (isRemoved) {
+    await FriendPush_reactionRemoved(di, { ownerId: params.ownerId, reactorId: userId });
+  }
+  return ResponseUtils_json(200, event, { data: { deleted: true } });
+};
+
+const getFollowInvitePageEndpoint = Endpoint.build("/f/:token");
+const getFollowInvitePageHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getFollowInvitePageEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di } = payload;
+  const invite = await new FollowInviteDao(di).get(params.token);
+  const nicknames = invite != null ? await new UserDao(di).getNicknamesByIds([invite.inviterId]) : {};
+  return {
+    statusCode: invite != null ? 200 : 404,
+    body: FollowInvitePage_html({
+      token: params.token,
+      nickname: invite != null ? nicknames[invite.inviterId] : undefined,
+      isValid: invite != null,
+    }),
+    headers: { "content-type": "text/html", "cache-control": "no-store" },
+  };
+};
+
+const getProfileEndpoint = Endpoint.build("/profile", { user: "string" });
+const getProfileHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProfileEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const error: { message?: string } = {};
+  const result = await new UserDao(di).getById(params.user);
+  if (result != null) {
+    const storage = result.storage;
+    if (storage.settings.isPublicProfile) {
+      return {
+        statusCode: 200,
+        body: renderUserHtml(di.fetch, storage, params.user),
+        headers: { "content-type": "text/html" },
+      };
+    } else {
+      error.message = "The user's profile is not public";
+    }
+  } else {
+    error.message = "Can't find user";
+  }
+  return ResponseUtils_json(400, event, { error });
+};
+
+const getDashboardsUserEndpoint = Endpoint.build("/dashboards/user/:userid", { key: "string" });
+const getDashboardsUserHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getDashboardsUserEndpoint
+> = async ({ payload, match }) => {
+  const { event, di } = payload;
+  const apiKey = await di.secrets.getApiKey();
+  if (match.params.key === apiKey) {
+    const userDao = new UserDao(di);
+    const eventDao = new EventDao(di);
+    const user = await userDao.getById(match.params.userid);
+    const { events, nextBefore, hasMore } = await eventDao.getByUserIdByDays(match.params.userid, 1);
+    if (user != null || events.length > 0) {
+      const firstWorkoutDate =
+        user && user.storage.history.length > 0
+          ? DateUtils_formatYYYYMMDD(user.storage.history[user.storage.history.length - 1].startTime)
+          : undefined;
+
+      return {
+        statusCode: 200,
+        body: renderUserDashboardHtml(
+          di.fetch,
+          apiKey,
+          user
+            ? {
+                email: user.email,
+                id: user.id,
+                workoutsCount: user.storage.history.length,
+                firstWorkoutDate,
+                programNames: user.storage.programs.map((p) => p.name),
+              }
+            : undefined,
+          events,
+          nextBefore,
+          hasMore
+        ),
+        headers: { "content-type": "text/html" },
+      };
+    } else {
+      return ResponseUtils_json(404, event, { error: "User not found" });
+    }
+  } else {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+};
+
+const getDashboardsUserEventsEndpoint = Endpoint.build("/dashboards/user/:userid/events", {
+  key: "string",
+  before: "number?",
+  days: "number?",
+});
+const getDashboardsUserEventsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getDashboardsUserEventsEndpoint
+> = async ({ payload, match }) => {
+  const { event, di } = payload;
+  const apiKey = await di.secrets.getApiKey();
+  if (match.params.key !== apiKey) {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+  const eventDao = new EventDao(di);
+  const { events, nextBefore, hasMore } = await eventDao.getByUserIdByDays(
+    match.params.userid,
+    match.params.days ?? 4,
+    match.params.before
+  );
+  return ResponseUtils_json(200, event, { events, nextBefore, hasMore });
+};
+
+interface IPaymentsPage {
+  paymentsData: IPaymentsDashboardData[];
+  userAffiliates: Partial<Record<string, IPaymentsDashboardUserAffiliate>>;
+  summary: IPaymentsSummary;
+  nextBefore: number;
+  hasMore: boolean;
+}
+
+async function buildPaymentsPage(di: IDI, before: number | undefined, months: number): Promise<IPaymentsPage> {
+  const allPayments = (await new PaymentDao(di).getAllPayments()).filter((p) => !p.isTest);
+  const summary = computePaymentsSummary([{ date: "all", payments: allPayments }]);
+
+  const start =
+    before != null
+      ? DateUtils_addUTCMonths(before, -months)
+      : DateUtils_addUTCMonths(DateUtils_startOfUTCMonth(Date.now()), -(months - 1));
+
+  const windowed = allPayments.filter((p) => p.timestamp >= start && (before == null || p.timestamp < before));
+  const hasMore = allPayments.some((p) => p.timestamp < start);
+
+  const paymentsByDate: Record<string, IPaymentDao[]> = {};
+  for (const payment of windowed) {
+    const date = DateUtils_formatUTCYYYYMMDD(payment.timestamp);
+    if (!paymentsByDate[date]) {
+      paymentsByDate[date] = [];
+    }
+    paymentsByDate[date].push(payment);
+  }
+
+  const paymentsData: IPaymentsDashboardData[] = Object.entries(paymentsByDate)
+    .map(([date, payments]) => ({
+      date,
+      payments: payments.sort((a, b) => b.timestamp - a.timestamp),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const uniqueUserIds = Array.from(new Set(windowed.map((p) => p.userId)));
+  const entriesByUser = await new AffiliateDao(di).getAttributionEntries(uniqueUserIds);
+  const userAffiliates: Partial<Record<string, IPaymentsDashboardUserAffiliate>> = {};
+  for (const userId of uniqueUserIds) {
+    const first = AffiliateAttribution_first(entriesByUser[userId] || []);
+    if (first) {
+      userAffiliates[userId] = first;
+    }
+  }
+
+  return { paymentsData, userAffiliates, summary, nextBefore: start, hasMore };
+}
+
+const getDashboardsPaymentsEndpoint = Endpoint.build("/dashboards/payments", {
+  key: "string",
+  before: "number?",
+  months: "number?",
+});
+const getDashboardsPaymentsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getDashboardsPaymentsEndpoint
+> = async ({ payload, match }) => {
+  const { event, di } = payload;
+  const apiKey = await di.secrets.getApiKey();
+  if (match.params.key !== apiKey) {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+  const page = await buildPaymentsPage(di, match.params.before, match.params.months ?? 2);
+  if (match.params.before != null) {
+    return ResponseUtils_json(200, event, page);
+  }
+  return ResponseUtils_gzippedHtml(
+    renderPaymentsDashboardHtml(
+      di.fetch,
+      apiKey,
+      page.paymentsData,
+      page.userAffiliates,
+      page.summary,
+      page.nextBefore,
+      page.hasMore
+    )
+  );
+};
+
+const getProfileImageEndpoint = Endpoint.build("/profileimage", { user: "string" });
+const getProfileImageHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProfileImageEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return ImageCacher_cache(di, event, `profileimage${event.path}-${params.user}.png`, async () => {
+    const result = await new UserDao(di).getById(params.user);
+    if (result != null) {
+      if (result?.storage?.settings?.isPublicProfile) {
+        const imageResult = await userImage(result.storage);
+        return { success: true, data: imageResult };
+      } else {
+        return { success: false, error: "The user's profile is not public" };
+      }
+    } else {
+      return { success: false, error: "Can't find user" };
+    }
+  });
+};
+
+const getAdminUsersEndpoint = Endpoint.build("/admin/users", { key: "string" });
+const getAdminUsersHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAdminUsersEndpoint> = async ({
+  payload,
+  match,
+}) => {
+  const { event, di } = payload;
+  if (match.params.key === (await di.secrets.getApiKey())) {
+    const users = await new UserDao(di).getAll();
+    const processedUsers = await Promise.all(
+      users.map((u) => {
+        const storage = runMigrations(u.storage);
+
+        return {
+          id: u.id,
+          email: u.email,
+          history: storage.history.slice(0, 4),
+          totalHistory: storage.history.length,
+          programs: storage.programs.map((p) => p.name),
+          settings: storage.settings,
+          timestamp: u.createdAt,
+        };
+      })
+    );
+    processedUsers.sort((a, b) => {
+      const h1 = a.history[0];
+      const h2 = b.history[0];
+      return (h2 == null ? 0 : Date.parse(h2.date)) - (h1 == null ? 0 : Date.parse(h1.date));
+    });
+    return {
+      statusCode: 200,
+      body: renderUsersHtml({ users: processedUsers, apiKey: match.params.key }),
+      headers: { "content-type": "text/html" },
+    };
+  } else {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+};
+
+const getDashboardsUsersEndpoint = Endpoint.build("/dashboards/users", { key: "string" });
+const getDashboardsUsersHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getDashboardsUsersEndpoint
+> = async ({ payload, match }) => {
+  const { event, di } = payload;
+  const apiKey = await di.secrets.getApiKey();
+  if (match.params.key === apiKey) {
+    const lastThreeMonths = [
+      DateUtils_yearAndMonth(Date.now()),
+      DateUtils_yearAndMonth(Date.now() - 1000 * 60 * 60 * 24 * 30),
+      DateUtils_yearAndMonth(Date.now() - 1000 * 60 * 60 * 24 * 60),
+    ];
+    const last3MonthslogRecords = (
+      await Promise.all([
+        await new LogDao(di).getAllForYearAndMonth(lastThreeMonths[0][0], lastThreeMonths[0][1]),
+        // await new LogDao(di).getAllForYearAndMonth(lastThreeMonths[1][0], lastThreeMonths[1][1]),
+        // await new LogDao(di).getAllForYearAndMonth(lastThreeMonths[2][0], lastThreeMonths[2][1]),
+      ])
+    ).flat();
+    const userIds = Array.from(
+      new Set(last3MonthslogRecords.filter((r) => r.action === "ls-finish-workout").map((r) => r.userId))
+    );
+    const [users, userPrograms, unsortedLogRecords, freeUsers, subscriptionDetailsDaos] = await Promise.all([
+      new UserDao(di).getLimitedByIds(userIds),
+      new UserDao(di).getProgramsByUserIds(userIds),
+      new LogDao(di).getForUsers(userIds),
+      new FreeUserDao(di).getAll(userIds),
+      new SubscriptionDetailsDao(di).getAll(userIds),
+    ]);
+    const usersById = CollectionUtils_groupByKeyUniq(users, "id");
+    const userIdToProgramNames = userPrograms.reduce<Record<string, { id: string; name: string }[]>>((memo, p) => {
+      memo[p.userId] = memo[p.userId] || [];
+      memo[p.userId].push({ id: p.id, name: `${p.name} ${p.planner ? "🎯" : "👴"}` });
+      return memo;
+    }, {});
+    const subscriptionDetailsById = CollectionUtils_groupByKeyUniq(subscriptionDetailsDaos, "userId");
+    const logRecords = CollectionUtils_sortBy(unsortedLogRecords, "ts", true);
+    const freeUsersById = CollectionUtils_groupByKeyUniq(freeUsers, "id");
+
+    const logRecordsByUserId = CollectionUtils_groupByKey(logRecords, "userId");
+    const data: IUsersDashboardData[] = Object.keys(logRecordsByUserId).map((userId) => {
+      const userLogRecords = CollectionUtils_sortBy(logRecordsByUserId[userId] || [], "ts", true);
+      const programNames = CollectionUtils_sort(userIdToProgramNames[userId] || [], (a, b) => {
+        const user = usersById[userId];
+        return user != null ? (a.id === user.storage.currentProgramId ? -1 : 1) : -1;
+      }).map((p) => p.name);
+      const lastAction = userLogRecords[0];
+      const firstAction = userLogRecords[userLogRecords.length - 1];
+      const workoutsCount = userLogRecords.filter((r) => r.action === "ls-finish-workout")[0]?.cnt || 0;
+      const referrer = usersById[userId]?.storage.referrer || userLogRecords.filter((r) => !!r.referrer)[0]?.referrer;
+      const platforms = Array.from(
+        userLogRecords.reduce<Set<string>>((memo, record) => {
+          for (const val of record.platforms || []) {
+            memo.add(`${val.name}${val.version ? ` - ${val.version}` : ""}`);
+          }
+          return memo;
+        }, new Set())
+      );
+      const affiliates = Array.from(
+        userLogRecords.reduce<Set<string>>((memo, record) => {
+          for (const val of Object.keys(record.affiliates || {})) {
+            memo.add(val);
+          }
+          return memo;
+        }, new Set())
+      );
+      const subscriptions = userLogRecords.reduce<Set<"apple" | "google" | "unclaimedkey" | "key">>((memo, record) => {
+        for (const val of record.subscriptions || []) {
+          memo.add(val);
+        }
+        return memo;
+      }, new Set());
+      if (Object.keys(usersById[userId]?.storage.subscription.apple || {}).length > 0) {
+        subscriptions.add("apple");
+      }
+      if (Object.keys(usersById[userId]?.storage.subscription.google || {}).length > 0) {
+        subscriptions.add("google");
+      }
+      if (usersById[userId]?.storage.subscription.key === "unclaimed") {
+        subscriptions.add("unclaimedkey");
+      } else if (usersById[userId]?.storage.subscription.key) {
+        subscriptions.add("key");
+      }
+      const signupRequests = userLogRecords.reduce<[number, number, number]>(
+        (memo, r) => {
+          if (r.action === "ls-signup-request-signup") {
+            memo[0] += r.cnt;
+          } else if (r.action === "ls-signup-request-maybe-later") {
+            memo[1] += r.cnt;
+          } else if (r.action === "ls-signup-request-close") {
+            memo[2] += r.cnt;
+          }
+          return memo;
+        },
+        [0, 0, 0]
+      );
+
+      const subscriptionDetailsDao = subscriptionDetailsById[userId];
+      let subscriptionDetails = undefined;
+      if (subscriptionDetailsDao) {
+        let product: "yearly" | "montly" | "lifetime";
+        if (subscriptionDetailsDao.product === "com.liftosaur.subscription.ios_montly") {
+          product = "montly";
+        } else if (subscriptionDetailsDao.product === "com.liftosaur.subscription.ios_yearly") {
+          product = "yearly";
+        } else if (subscriptionDetailsDao.product === "com.liftosaur.subscription.ios_lifetime") {
+          product = "lifetime";
+        } else {
+          product = subscriptionDetailsDao.product as "montly" | "yearly" | "lifetime";
+        }
+        subscriptionDetails = {
+          product,
+          isTrial: subscriptionDetailsDao.isTrial,
+          isPromo: subscriptionDetailsDao.isPromo,
+          isActive: subscriptionDetailsDao.isActive,
+          expires: subscriptionDetailsDao.expires,
+          promoCode: subscriptionDetailsDao.promoCode,
+          pendingProduct: subscriptionDetailsDao.pendingProduct,
+        };
+      }
+
+      return {
+        userId,
+        email: usersById[userId]?.email,
+        freeUserExpires: freeUsersById[userId]?.expires,
+        userTs: usersById[userId]?.createdAt,
+        reviewRequests: usersById[userId]?.storage?.reviewRequests || [],
+        signupRequests: signupRequests,
+        firstAction: { name: firstAction.action, ts: firstAction.ts },
+        lastAction: { name: lastAction.action, ts: lastAction.ts },
+        workoutsCount,
+        platforms,
+        programNames,
+        affiliates,
+        subscriptions: Array.from(subscriptions),
+        subscriptionDetails,
+        referrer,
+      };
+    });
+
+    return {
+      statusCode: 200,
+      body: renderUsersDashboardHtml(di.fetch, apiKey, data),
+      headers: { "content-type": "text/html" },
+    };
+  } else {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+};
+
+const getDashboardsAffiliatesEndpoint = Endpoint.build("/dashboards/affiliates/:id", { key: "string" });
+const getDashboardsAffiliatesHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getDashboardsAffiliatesEndpoint
+> = async ({ payload, match }) => {
+  const { event, di } = payload;
+  const apiKey = await di.secrets.getApiKey();
+  if (match.params.key === apiKey) {
+    const affiliateDao = new AffiliateDao(di);
+    const { affiliateData, summary, monthlyPayments } = await affiliateDao.getDashboardData(match.params.id);
+
+    return {
+      statusCode: 200,
+      body: renderAffiliateDashboardHtml(di.fetch, match.params.id, affiliateData, summary, monthlyPayments, apiKey),
+      headers: { "content-type": "text/html" },
+    };
+  } else {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+};
+
+const getAdminLogsEndpoint = Endpoint.build("/admin/logs", { key: "string" });
+const getAdminLogsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAdminLogsEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  if (params.key === (await di.secrets.getApiKey())) {
+    const userLogs = await new LogDao(di).getAllSince(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    const users = await new UserDao(di).getAllLimited();
+    const usersByKey = CollectionUtils_groupByKey(users, "id");
+    const logPayloads = userLogs.reduce<ILogPayloads>((memo, log) => {
+      memo[log.userId] = memo[log.userId] || { logs: [], email: usersByKey[log.userId]?.[0].email };
+      memo[log.userId]!.logs.push({
+        action: log.action,
+        count: log.cnt,
+        timestamp: log.ts,
+        affiliates: log.affiliates,
+        platforms: log.platforms,
+        subscriptions: log.subscriptions,
+      });
+      return memo;
+    }, {});
+    return {
+      statusCode: 200,
+      body: renderLogsHtml({ logs: logPayloads, apiKey: params.key }),
+      headers: { "content-type": "text/html" },
+    };
+  } else {
+    return ResponseUtils_json(401, event, { data: "Unauthorized" });
+  }
+};
+
+const getUserAffiliatesEndpoint = Endpoint.build("/user/affiliates", { key: "string?", userid: "string?" });
+const getUserAffiliatesHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUserAffiliatesEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const { userId: currentUserId, error } = await getAdminTargetOrCurrentUserId(event, di, params);
+  if (error === "invalid_admin_key") {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  if (!currentUserId) {
+    const baseHeaders = ResponseUtils_getHeaders(event);
+    return {
+      statusCode: 302,
+      headers: {
+        ...baseHeaders,
+        "content-type": "text/html",
+        Location: `/login?url=${encodeURIComponent("/user/affiliates")}`,
+      },
+      body: "",
+    };
+  }
+
+  const affiliateDao = new AffiliateDao(di);
+  const creatorStats = await affiliateDao.getCreatorStats(currentUserId);
+  const userResult = await getUserAccount(payload, { withBodyweight: true });
+  const account = userResult.success ? userResult.data.account : undefined;
+
+  return {
+    statusCode: 200,
+    body: renderUserAffiliatesHtml(di.fetch, account, creatorStats),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+export const deleteAccountEndpoint = Endpoint.build("/api/deleteaccount");
+const deleteAccountHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteAccountEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event } = payload;
+  const currentUserId = await getCurrentUserId(payload.event, payload.di);
+  if (currentUserId != null) {
+    const userDao = new UserDao(payload.di);
+    await userDao.removeUser(currentUserId);
+    return ResponseUtils_json(200, event, { data: "ok" });
+  } else {
+    return ResponseUtils_json(401, event, {});
+  }
+};
+
+export const postBackupAccountEndpoint = Endpoint.build("/api/backupaccount");
+const postBackupAccountHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postBackupAccountEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const currentUserId = await getCurrentUserId(event, di);
+  if (currentUserId == null) {
+    return ResponseUtils_json(401, event, {});
+  }
+  const user = await new UserDao(di).getById(currentUserId);
+  const storageId = await new StorageDao(di).store(currentUserId, user?.storage, undefined);
+  if (storageId == null) {
+    return ResponseUtils_json(404, event, {});
+  }
+  await new EventDao(di).post({
+    type: "event",
+    name: "account-backup",
+    userId: currentUserId,
+    commithash: process.env.COMMIT_HASH ?? "",
+    timestamp: Date.now(),
+    isMobile: Mobile_isMobile(getUserAgent(event)),
+    extra: { storage_id: storageId },
+  });
+  return ResponseUtils_json(200, event, { storageId });
+};
+
+const getAllProgramsEndpoint = Endpoint.build("/programs");
+const getAllProgramsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAllProgramsEndpoint> = async ({
+  payload,
+}) => {
+  const { di } = payload;
+  let account: IAccount | undefined;
+  const userResult = await getUserAccount(payload);
+  if (userResult.success) {
+    account = userResult.data.account;
+  }
+  const dao = new ProgramDao(di);
+  const index = await dao.getIndex();
+  return {
+    statusCode: 200,
+    body: renderAllProgramsHtml(di.fetch, index, account),
+    headers: {
+      "content-type": "text/html",
+      "cache-control": "public, s-maxage=86400, max-age=0",
+    },
+  };
+};
+
+const getAllDocsEndpoint = Endpoint.build("/doc");
+const getAllDocsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAllDocsEndpoint> = async ({
+  payload,
+}) => {
+  const { di } = payload;
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  const dao = new DocDao();
+  const docs = dao.getIndex();
+  return {
+    statusCode: 200,
+    body: renderAllDocsHtml(di.fetch, docs, isLoggedIn),
+    headers: {
+      "content-type": "text/html",
+      "cache-control": "public, s-maxage=86400, max-age=0",
+    },
+  };
+};
+
+const getDocDetailsEndpoint = Endpoint.build("/doc/:id");
+const getDocDetailsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getDocDetailsEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { di } = payload;
+  const dao = new DocDao();
+  const result = dao.getById(params.id);
+  if (result != null) {
+    const isLoggedIn = getIsLoggedIn(payload.event);
+    return {
+      statusCode: 200,
+      body: renderDocDetailsHtml(di.fetch, result.indexEntry, result.detail.content, isLoggedIn),
+      headers: {
+        "content-type": "text/html",
+        "cache-control": "public, s-maxage=86400, max-age=0",
+      },
+    };
+  } else {
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html", "cache-control": "no-cache" },
+    };
+  }
+};
+
+const getAllFeaturesEndpoint = Endpoint.build("/features");
+const getAllFeaturesHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAllFeaturesEndpoint> = async ({
+  payload,
+}) => {
+  const { di } = payload;
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  const dao = new DocDao("features");
+  return {
+    statusCode: 200,
+    body: renderAllFeaturesHtml(di.fetch, dao.getIndex(), dao.getScreenshotSizes(), isLoggedIn),
+    headers: {
+      "content-type": "text/html",
+      "cache-control": "public, s-maxage=86400, max-age=0",
+    },
+  };
+};
+
+const getFeatureDetailsEndpoint = Endpoint.build("/features/:id");
+const getFeatureDetailsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getFeatureDetailsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di } = payload;
+  const dao = new DocDao("features");
+  const result = dao.getById(params.id);
+  if (result == null) {
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html", "cache-control": "no-cache" },
+    };
+  }
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  return {
+    statusCode: 200,
+    body: renderFeatureDetailsHtml(
+      di.fetch,
+      result.indexEntry,
+      result.detail.content,
+      dao.getScreenshotSizes(),
+      isLoggedIn
+    ),
+    headers: {
+      "content-type": "text/html",
+      "cache-control": "public, s-maxage=86400, max-age=0",
+    },
+  };
+};
+
+const getUserContextEndpoint = Endpoint.build("/api/usercontext");
+const getUserContextHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getUserContextEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const user = await getCurrentLimitedUser(event, di);
+  if (user == null) {
+    return ResponseUtils_json(
+      200,
+      event,
+      { account: null, units: null },
+      {
+        "set-cookie": ResponseUtils_clearSessionCookie(),
+      }
+    );
+  }
+  const following = await new FollowDao(di).listFollowing(user.id);
+  const account = {
+    ...Account_getFromStorage(user.id, user.email, user.storage),
+    hasFriends: following.some((row) => row.status === "approved"),
+  };
+  return ResponseUtils_json(200, event, { account, units: user.storage.settings.units });
+};
+
+const getProgramDetailsEndpoint = Endpoint.build("/programs/:id");
+const getProgramDetailsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramDetailsEndpoint
+> = async ({ payload, match: { params } }): Promise<APIGatewayProxyResult> => {
+  const { di } = payload;
+  const dao = new ProgramDao(di);
+  const route = ProgramMarkdown_parseRouteId(params.id);
+  const result = await dao.getById(route.id);
+  const userAgent = getUserAgent(payload.event);
+  if (result != null) {
+    const { program, indexEntry } = result;
+    let fullDescription: string | undefined;
+    let faq: string | undefined;
+    try {
+      const detail = await dao.getDetail(route.id);
+      fullDescription = detail.fullDescription || program.description;
+      faq = detail.faq;
+    } catch (e) {
+      // Fall back to description from program
+    }
+    if (route.isMarkdown) {
+      return {
+        statusCode: 200,
+        body: ProgramMarkdown_render({
+          indexEntry,
+          fullDescription,
+          faq,
+          programText: program.planner ? PlannerProgram_generateFullText(program.planner.weeks) : undefined,
+        }),
+        headers: {
+          "content-type": "text/markdown; charset=utf-8",
+          "cache-control": "public, s-maxage=86400, max-age=0",
+        },
+      };
+    }
+    const isLoggedIn = getIsLoggedIn(payload.event);
+
+    return {
+      statusCode: 200,
+      body: renderProgramDetailsHtml(program, di.fetch, fullDescription, faq, userAgent, isLoggedIn, indexEntry),
+      headers: {
+        "content-type": "text/html",
+        "cache-control": "public, s-maxage=86400, max-age=0",
+        link: ProgramMarkdown_linkHeader(program.id),
+      },
+    };
+  } else {
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html", "cache-control": "no-cache" },
+    };
+  }
+};
+
+const getProgramPreviewEndpoint = Endpoint.build("/program-preview");
+const getProgramPreviewHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramPreviewEndpoint
+> = async ({ payload }) => {
+  const { di } = payload;
+  return {
+    statusCode: 200,
+    body: renderProgramPreviewHtml(di.fetch),
+    headers: { "content-type": "text/html", "cache-control": "no-cache" },
+  };
+};
+
+const getPlannerEndpoint = Endpoint.build("/planner", { data: "string?" });
+const getPlannerHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getPlannerEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { di } = payload;
+  let initialProgram: IExportedProgram | undefined;
+  const data = params.data;
+  if (data) {
+    try {
+      const initialProgramJson = await NodeEncoder_decode(data);
+      const programData: IExportedProgram | IExportedPlannerProgram = JSON.parse(initialProgramJson);
+      if ("type" in programData && programData.type === "v2") {
+        initialProgram = Program_exportedPlannerProgramToExportedProgram(programData);
+      } else {
+        initialProgram = programData as IExportedProgram;
+      }
+    } catch (e) {
+      di.log.log(e);
+    }
+  }
+  const userResult = await getUserAccount(payload, { withBodyweight: true });
+  const account = userResult.success ? userResult.data.account : undefined;
+  const user = userResult.success ? userResult.data.user : undefined;
+  const userAgent = getUserAgent(payload.event);
+  const storage = user?.storage ? runMigrations(user.storage) : undefined;
+
+  return {
+    statusCode: 200,
+    body: renderPlannerHtml(di.fetch, initialProgram, account, storage, userAgent),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getFriendPlannerEndpoint = Endpoint.build("/planner/friend/:userId/:id");
+const getFriendPlannerHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getFriendPlannerEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { di, event } = payload;
+  const userResult = await getUserAccount(payload);
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const account = userResult.data.account;
+  const context = await FriendPrograms_editorContext(di, account.id, params.userId, params.id);
+  if (!context.success) {
+    return {
+      statusCode: context.error.status,
+      body: context.error.message,
+      headers: { "content-type": "text/html", "cache-control": "no-cache" },
+    };
+  }
+  return {
+    statusCode: 200,
+    body: renderFriendPlannerHtml(
+      di.fetch,
+      context.data.exported,
+      account,
+      context.data.friendTarget,
+      getUserAgent(event)
+    ),
+    headers: { "content-type": "text/html", "cache-control": "no-cache" },
+  };
+};
+
+const getMainEndpoint = Endpoint.build("/main");
+const getMainHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getMainEndpoint> = async ({ payload }) => {
+  const di = payload.di;
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  const deviceType = (payload.event.headers["x-device-type"] || payload.event.headers["X-Device-Type"] || "desktop") as
+    | "ios"
+    | "android"
+    | "desktop";
+  const testimonials = await new TestimonialDao(di).getAll();
+
+  return {
+    statusCode: 200,
+    body: renderMainHtml(di.fetch, testimonials, isLoggedIn, deviceType),
+    headers: { "content-type": "text/html", "cache-control": "public, s-maxage=86400, max-age=0" },
+  };
+};
+
+const getProgramEndpoint = Endpoint.build("/program", { data: "string?" });
+const getProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const di = payload.di;
+  const data = params.data;
+  let program: IExportedProgram | undefined;
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  let user: ILimitedUserDao | undefined;
+  let account: IAccount | undefined;
+  const userResult = await getUserAccount(payload, { withPrograms: true, withBodyweight: true });
+  if (userResult.success) {
+    ({ user, account } = userResult.data);
+  }
+  const storage = user?.storage ? runMigrations(user.storage) : undefined;
+
+  if (data) {
+    try {
+      const exportedProgramJson = await NodeEncoder_decode(data);
+      const result = await ImportExporter_getExportedProgram(di.fetch, exportedProgramJson);
+      if (result.success) {
+        program = result.data;
+      } else {
+        di.log.log(result.error);
+      }
+    } catch (e) {
+      di.log.log(e);
+    }
+  }
+
+  return {
+    statusCode: 200,
+    body: renderProgramHtml(
+      di.fetch,
+      isMobile,
+      getUserAgent(payload.event),
+      false,
+      program,
+      account,
+      undefined,
+      storage
+    ),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getUserProgramsEndpoint = Endpoint.build("/user/programs");
+const getUserProgramsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getUserProgramsEndpoint> = async ({
+  payload,
+}) => {
+  const di = payload.di;
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  const userResult = await getUserAccount(payload, { withPrograms: true });
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const { account, user } = userResult.data;
+  const storage = runMigrations(user.storage);
+
+  return {
+    statusCode: 200,
+    body: renderProgramsListHtml(di.fetch, isMobile, account, storage),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+async function getUserAccount(
+  payload: IPayload,
+  args: { withPrograms?: boolean; withBodyweight?: boolean } = {}
+): Promise<IEither<{ user: ILimitedUserDao; account: IAccount }, APIGatewayProxyResult>> {
+  const currentUserId = await getCurrentUserId(payload.event, payload.di);
+  if (currentUserId == null) {
+    const currentUrl = payload.event.path;
+    const url = `/login?url=${encodeURIComponent(currentUrl)}`;
+    const result: APIGatewayProxyResult = {
+      statusCode: 302,
+      body: "",
+      headers: { "content-type": "text/html", location: url },
+    };
+    return { success: false, error: result };
+  }
+  const userDao = new UserDao(payload.di);
+  const user = await userDao.getLimitedById(currentUserId);
+  if (!user) {
+    const result = {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html" },
+    };
+    return { success: false, error: result };
+  }
+  const programs = args.withPrograms ? await userDao.getProgramsByUserId(user.id) : undefined;
+  user.storage.programs = programs;
+  const stats = args.withBodyweight ? await userDao.getLastBodyweightStats(user.id) : undefined;
+  user.storage.stats = stats;
+  const account = Account_getFromStorage(user.id, user.email, user.storage);
+  return { success: true, data: { user, account } };
+}
+
+const getAllExercisesEndpoint = Endpoint.build("/exercises");
+const getAllExercisesHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAllExercisesEndpoint> = async ({
+  payload,
+}) => {
+  const { di } = payload;
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  return {
+    statusCode: 200,
+    body: renderAllExercisesHtml(di.fetch, isLoggedIn),
+    headers: { "content-type": "text/html", "cache-control": "public, s-maxage=86400, max-age=0" },
+  };
+};
+
+const getExerciseEndpoint = Endpoint.build("/exercises/:id", { filtertypes: "string?" });
+const getExerciseHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getExerciseEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { di } = payload;
+  const exerciseType = Exercise_fromUrlSlug(params.id);
+  const filterTypes = (params.filtertypes || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t);
+  if (exerciseType && ExerciseImageUtils_exists(exerciseType, "small")) {
+    const isLoggedIn = getIsLoggedIn(payload.event);
+    return {
+      statusCode: 200,
+      body: renderExerciseHtml(di.fetch, params.id, exerciseType, filterTypes, isLoggedIn),
+      headers: { "content-type": "text/html", "cache-control": "public, s-maxage=86400, max-age=0" },
+    };
+  } else {
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html", "cache-control": "no-cache" },
+    };
+  }
+};
+
+const getProgramRevisionsEndpoint = Endpoint.build("/api/programrevisions/:programid", {
+  key: "string?",
+  userid: "string?",
+});
+const getProgramRevisionsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramRevisionsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const { userId: currentUserId, error } = await getAdminTargetOrCurrentUserId(event, di, params);
+  if (error === "invalid_admin_key") {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  if (currentUserId == null) {
+    const cookies = Cookie.parse(event.headers.Cookie || event.headers.cookie || "");
+    di.log.log(
+      "Program revisions - not authorized:",
+      `programid=${params.programid}`,
+      `cookienames=${Object.keys(cookies).join(",")}`,
+      `hasauthheader=${!!(event.headers.Authorization || event.headers.authorization)}`,
+      `ua=${getUserAgent(event)}`,
+      `xclient=${event.headers["x-client"] || event.headers["X-Client"] || ""}`
+    );
+    rollbar.error("Program revisions - not authorized", {
+      programid: params.programid,
+      cookienames: Object.keys(cookies).join(","),
+      hasauthheader: !!(event.headers.Authorization || event.headers.authorization),
+      ua: getUserAgent(event),
+      xclient: event.headers["x-client"] || event.headers["X-Client"] || "",
+    });
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  const userDao = new UserDao(di);
+  try {
+    const programRevisions = await userDao.listProgramRevisions(currentUserId, params.programid);
+    return ResponseUtils_json(200, event, { data: programRevisions });
+  } catch (e) {
+    di.log.log("Program revisions - failed to list:", `userid=${currentUserId}`, `programid=${params.programid}`, e);
+    throw e;
+  }
+};
+
+const getProgramRevisionEndpoint = Endpoint.build("/api/programrevision/:programid/:revision", {
+  key: "string?",
+  userid: "string?",
+});
+const getProgramRevisionHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramRevisionEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const { userId: currentUserId, error } = await getAdminTargetOrCurrentUserId(event, di, params);
+  if (error === "invalid_admin_key") {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  if (currentUserId == null) {
+    return ResponseUtils_json(401, event, { error: "not_authorized" });
+  }
+  const userDao = new UserDao(di);
+  const programRevision = await userDao.getProgramRevision(currentUserId, params.programid, params.revision);
+  const program = programRevision?.program;
+  if (!program || !program.planner) {
+    return ResponseUtils_json(404, event, { error: "not_found" });
+  }
+  const fulltext = PlannerProgram_generateFullText(program.planner.weeks);
+  return ResponseUtils_json(200, event, { text: fulltext });
+};
+
+const getLoginEndpoint = Endpoint.build("/login", { url: "string?" });
+const getLoginHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getLoginEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const currentUser = await getCurrentLimitedUser(event, di);
+  const account = currentUser
+    ? Account_getFromStorage(currentUser.id, currentUser.email, currentUser.storage)
+    : undefined;
+  return {
+    statusCode: 200,
+    body: renderLoginHtml(di.fetch, account, params.url),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getUserProgramEndpoint = Endpoint.build("/user/p/:programid");
+const getUserProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getUserProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const di = payload.di;
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  const userResult = await getUserAccount(payload, { withPrograms: true, withBodyweight: true });
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const { account, user } = userResult.data;
+  const storage = runMigrations(user.storage);
+  const exportedProgram = Program_storageToExportedProgram(storage, params.programid);
+  if (!exportedProgram) {
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: { "content-type": "text/html" },
+    };
+  }
+
+  const userDao = new UserDao(di);
+  const programRevisions = await userDao.listProgramRevisions(user.id, params.programid);
+  return {
+    statusCode: 200,
+    body: renderProgramHtml(
+      di.fetch,
+      isMobile,
+      getUserAgent(payload.event),
+      true,
+      exportedProgram,
+      account,
+      undefined,
+      storage,
+      programRevisions
+    ),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+async function getUserDashboardsStorage(
+  payload: IPayload
+): Promise<IEither<{ account: IAccount; storage: IStorage }, APIGatewayProxyResult>> {
+  const userResult = await getUserAccount(payload);
+  if (!userResult.success) {
+    return userResult;
+  }
+  const { account, user } = userResult.data;
+  const dashboards = await new UserDao(payload.di).getDashboardsByUserId(user.id);
+  return { success: true, data: { account, storage: runMigrations({ ...user.storage, dashboards }) } };
+}
+
+const getUserDashboardsEndpoint = Endpoint.build("/user/dashboards");
+const getUserDashboardsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUserDashboardsEndpoint
+> = async ({ payload }) => {
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  const result = await getUserDashboardsStorage(payload);
+  if (!result.success) {
+    return result.error;
+  }
+  const { account, storage } = result.data;
+  return {
+    statusCode: 200,
+    body: renderDashboardsListHtml(payload.di.fetch, {
+      isMobile,
+      account,
+      dashboards: storage.dashboards ?? [],
+      currentDashboardId: Dashboard_current(storage)?.id,
+    }),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+function friendsPageResponse(payload: IPayload, data: IFriendsPageData): APIGatewayProxyResult {
+  return {
+    statusCode: 200,
+    body: renderFriendsPageHtml(payload.di.fetch, data),
+    headers: { "content-type": "text/html" },
+  };
+}
+
+function friendsPageNotFound(): APIGatewayProxyResult {
+  return { statusCode: 404, body: "Not Found", headers: { "content-type": "text/html" } };
+}
+
+function isMobileRequest(payload: IPayload): boolean {
+  return Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+}
+
+const getUserFriendsEndpoint = Endpoint.build("/user/friends");
+const getUserFriendsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getUserFriendsEndpoint> = async ({
+  payload,
+}) => {
+  const userResult = await getUserAccount(payload);
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const { account, user } = userResult.data;
+  const follows = await Follows_load(payload.di, user.id);
+  return friendsPageResponse(payload, {
+    kind: "list",
+    isMobile: isMobileRequest(payload),
+    account,
+    now: Date.now(),
+    friends: FriendsWeb_rows(follows.following, await Follows_currentProgramNames(payload.di, follows.following)),
+  });
+};
+
+const getUserFriendWorkoutsEndpoint = Endpoint.build("/user/friends/:userId/workouts");
+const getUserFriendWorkoutsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUserFriendWorkoutsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const userResult = await getUserAccount(payload);
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const { account, user } = userResult.data;
+  const follows = await Follows_load(payload.di, user.id);
+  const friend = follows.following.find((f) => f.userId === params.userId);
+  if (friend == null) {
+    return friendsPageNotFound();
+  }
+  const feed = await Feed_load(payload.di, user.id, { owners: [friend.userId], limit: 20 });
+  return friendsPageResponse(payload, {
+    kind: "workouts",
+    isMobile: isMobileRequest(payload),
+    account,
+    now: Date.now(),
+    ownerId: friend.userId,
+    name: Follow_displayName(friend.nickname),
+    viewer: { userId: user.id, nickname: user.storage.settings.nickname },
+    settings: user.storage.settings,
+    feed,
+  });
+};
+
+const getUserFriendProgramsEndpoint = Endpoint.build("/user/friends/:userId/programs");
+const getUserFriendProgramsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUserFriendProgramsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const userResult = await getUserAccount(payload);
+  if (!userResult.success) {
+    return userResult.error;
+  }
+  const { account, user } = userResult.data;
+  const [follows, programs] = await Promise.all([
+    Follows_load(payload.di, user.id),
+    FriendPrograms_cards(payload.di, user.id, params.userId),
+  ]);
+  const friend = follows.following.find((f) => f.userId === params.userId);
+  if (friend == null || !programs.success) {
+    return friendsPageNotFound();
+  }
+  return friendsPageResponse(payload, {
+    kind: "programs",
+    isMobile: isMobileRequest(payload),
+    account,
+    now: Date.now(),
+    ownerId: friend.userId,
+    name: Follow_displayName(friend.nickname),
+    programs: programs.data.programs,
+    settings: programs.data.settings,
+  });
+};
+
+const getUserDashboardEndpoint = Endpoint.build("/user/d/:dashboardid");
+const getUserDashboardHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getUserDashboardEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  const result = await getUserDashboardsStorage(payload);
+  if (!result.success) {
+    return result.error;
+  }
+  const { account, storage } = result.data;
+  const dashboard = (storage.dashboards ?? []).find((d) => d.id === params.dashboardid);
+  if (dashboard == null) {
+    return { statusCode: 404, body: "Not Found", headers: { "content-type": "text/html" } };
+  }
+  return {
+    statusCode: 200,
+    body: renderDashboardEditorHtml(payload.di.fetch, {
+      isMobile,
+      account,
+      dashboard,
+      settings: storage.settings,
+      base: FieldRevision_dashboardText(storage._versions, dashboard.id),
+    }),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getAffiliatesEndpoint = Endpoint.build("/affiliates");
+const getAffiliatesHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAffiliatesEndpoint> = async ({
+  payload,
+  match,
+}) => {
+  const di = payload.di;
+  const userResult = await getUserAccount(payload);
+  const account = userResult.success ? userResult.data.account : undefined;
+  return {
+    statusCode: 200,
+    body: renderAffiliatesHtml(di.fetch, account),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getMusclesForExerciseEndpoint = Endpoint.build("/api/muscles", { exercise: "string", tempuserid: "string?" });
+const getMusclesForExerciseHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getMusclesForExerciseEndpoint
+> = async ({ payload, match }) => {
+  const di = payload.di;
+  const exerciseName = match.params.exercise;
+  const aiMuscleCacheDao = new AiMuscleCacheDao(di);
+  const eventDao = new EventDao(di);
+  const userId = (await getCurrentUserId(payload.event, di)) ?? match.params.tempuserid ?? "anonymous";
+  await eventDao.post({
+    type: "event",
+    name: "ai-get-muscles",
+    userId: userId,
+    commithash: process.env.COMMIT_HASH ?? "",
+    timestamp: Date.now(),
+    isMobile: Mobile_isMobile(getUserAgent(payload.event)),
+    extra: { exercise: exerciseName },
+  });
+  di.log.log("Looking for muscles for exercise:", exerciseName);
+  const cachedResponse = await aiMuscleCacheDao.getByName(exerciseName);
+  if (cachedResponse) {
+    di.log.log("Found cached response for muscles for exercise:", exerciseName);
+    if (cachedResponse.isSuccess) {
+      const musclesResponse = JSON.parse(cachedResponse.response);
+      return ResponseUtils_json(200, payload.event, { data: musclesResponse }, { "X-Cache": "HIT" });
+    } else {
+      return ResponseUtils_json(500, payload.event, { error: "Failed to generate muscles" }, { "X-Cache": "HIT" });
+    }
+  } else {
+    di.log.log("Missed cached response for muscles for exercise:", exerciseName);
+    const anthropicKey = await di.secrets.getAnthropicKey();
+    const llmProvider = new ClaudeProvider(anthropicKey);
+    const llmMuscles = new LlmMuscles(di, llmProvider);
+    const muscleGenerator = new MuscleGenerator(di, llmMuscles);
+    const musclesResponse = await muscleGenerator.generateMuscles(match.params.exercise);
+    di.log.log("Generated muscles response for ", exerciseName, musclesResponse);
+    if (musclesResponse) {
+      await aiMuscleCacheDao.create({ name: exerciseName, response: JSON.stringify(musclesResponse), isSuccess: true });
+      return ResponseUtils_json(200, payload.event, { data: musclesResponse });
+    } else {
+      await aiMuscleCacheDao.create({
+        name: exerciseName,
+        response: JSON.stringify({}),
+        isSuccess: false,
+      });
+      return ResponseUtils_json(500, payload.event, { error: "Failed to generate muscles" });
+    }
+  }
+};
+
+const getUploadedImagesEndpoint = Endpoint.build("/api/uploadedimages");
+const getUploadedImagesHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getUploadedImagesEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Unauthorized" });
+  }
+  const userDao = new UserDao(di);
+  const files = await userDao.getImages(userId);
+  return ResponseUtils_json(
+    200,
+    event,
+    { data: { images: files.map((f) => `${getUserImagesPrefix()}${f}`) } },
+    { "Cache-Control": "no-store" }
+  );
+};
+
+const postImageUploadUrlEndpoint = Endpoint.build("/api/imageuploadurl");
+const postImageUploadUrlHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postImageUploadUrlEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  const { fileName, contentType } = getBodyJson(event);
+
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    return ResponseUtils_json(401, event, { error: "Unauthorized" });
+  }
+
+  if (!fileName || !contentType) {
+    return ResponseUtils_json(400, event, { error: "fileName and contentType are required" });
+  }
+
+  // These images are served from the app origin, so the presigned Content-Type (S3 signs and enforces
+  // it) must never be something a browser would execute - no text/html, and no image/svg+xml, which
+  // can carry script. The app only ever uploads the raster types below.
+  const allowedContentTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+  if (!allowedContentTypes.includes(contentType)) {
+    return ResponseUtils_json(400, event, { error: "Unsupported content type" });
+  }
+
+  try {
+    const safeFileName =
+      `${fileName}`
+        .split("/")
+        .pop()!
+        .replace(/[^a-zA-Z0-9._-]/g, "_")
+        .slice(-64) || "image";
+    const key = `user-uploads/${userId}/${UidFactory_generateUid(8)}-${safeFileName}`;
+    const env = Utils_getEnv();
+    const bucketname = `${LftS3Buckets.userimages}${env === "dev" ? "dev" : ""}`;
+    const uploadUrl = await di.s3.getPresignedUploadUrl({
+      bucket: bucketname,
+      key,
+      contentType,
+      expiresIn: 300,
+    });
+    const imageUrl = `${getUserImagesPrefix()}${key}`;
+
+    return ResponseUtils_json(200, event, {
+      uploadUrl,
+      imageUrl,
+      key,
+    });
+  } catch (error) {
+    di.log.log("Error generating presigned URL:", error);
+    return ResponseUtils_json(500, event, { error: "Failed to generate upload URL" });
+  }
+};
+
+const getAiPromptEndpoint = Endpoint.build("/ai/prompt");
+const getAiPromptHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAiPromptEndpoint> = async ({
+  payload,
+  match,
+}) => {
+  const di = payload.di;
+  const userResult = await getUserAccount(payload, { withPrograms: true });
+  let account: IAccount | undefined;
+  if (userResult.success) {
+    ({ account } = userResult.data);
+  }
+  return {
+    statusCode: 200,
+    body: renderAiPromptHtml(di.fetch, account),
+    headers: { "content-type": "text/html" },
+  };
+};
+
+const getProgramShorturlResponseEndpoint = Endpoint.build("/api/p/:id");
+const getProgramShorturlResponseHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramShorturlEndpoint
+> = async ({ payload, match: { params } }) => {
+  return _getProgramShorturlResponseHandler(payload.di, payload.event, params.id);
+};
+
+const getPlannerShorturlResponseEndpoint = Endpoint.build("/api/n/:id");
+const getPlannerShorturlResponseHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getPlannerShorturlResponseEndpoint
+> = async ({ payload, match: { params } }) => {
+  return _getProgramShorturlResponseHandler(payload.di, payload.event, params.id);
+};
+
+const getPlanShorturlResponseEndpoint = Endpoint.build("/api/b/:id");
+const getPlanShorturlResponseHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getPlanShorturlResponseEndpoint
+> = async ({ payload, match: { params } }) => {
+  return _getProgramShorturlResponseHandler(payload.di, payload.event, params.id);
+};
+
+const postEventEndpoint = Endpoint.build("/api/event");
+const postEventHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postEventEndpoint> = async ({
+  payload,
+}) => {
+  const { di, event } = payload;
+  const bodyJson: IEventPayload = getBodyJson(event);
+  const userId = (await getCurrentUserId(event, di)) || bodyJson.userId;
+  if (userId == null) {
+    return ResponseUtils_json(400, event, { error: "missing user id" });
+  }
+  const eventDao = new EventDao(di);
+  await eventDao.post({
+    ...bodyJson,
+    userId,
+    isMobile: Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || ""),
+  });
+  return ResponseUtils_json(200, event, { data: "ok" });
+};
+
+async function _getProgramShorturlResponseHandler(
+  di: IDI,
+  event: APIGatewayProxyEvent,
+  id: string
+): Promise<APIGatewayProxyResult> {
+  const urlString = await new UrlDao(di).get(id);
+  if (urlString) {
+    const url = UrlUtils_build(urlString, "https://www.liftosaur.com");
+    const data = url.searchParams.get("data");
+    const s = url.searchParams.get("s");
+    const u = url.searchParams.get("u");
+    if (data) {
+      return ResponseUtils_json(200, event, { data, s, u });
+    } else {
+      return ResponseUtils_json(401, event, {});
+    }
+  }
+  return ResponseUtils_json(404, event, {});
+}
+
+const postClaimFreeUserEndpoint = Endpoint.build("/api/claimkey/:userid");
+const postClaimFreeUserHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postClaimFreeUserEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di, event } = payload;
+  const userid = params.userid;
+  const claim = await new FreeUserDao(di).claim(userid);
+  return ResponseUtils_json(200, event, { data: { claim } });
+};
+
+const postStoreExceptionDataEndpoint = Endpoint.build("/api/exception");
+const postStoreExceptionDataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postStoreExceptionDataEndpoint
+> = async ({ payload }) => {
+  const { di, event } = payload;
+  const bodyJson = getBodyJson(event);
+  const { id, data } = bodyJson;
+  const idStr = typeof id === "number" ? `${id}` : id;
+  if (typeof idStr !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(idStr)) {
+    return ResponseUtils_json(400, event, { error: "Invalid id" });
+  }
+  const exceptionDao = new ExceptionDao(di);
+  let exceptionData: string;
+  if (typeof data === "string") {
+    exceptionData = await NodeEncoder_decode(data);
+  } else {
+    exceptionData = JSON.stringify(data);
+  }
+  await exceptionDao.store(idStr, exceptionData);
+  return ResponseUtils_json(200, event, { data: { id } });
+};
+
+const getStoreExceptionDataEndpoint = Endpoint.build("/api/exception/:id", { key: "string" });
+const getStoreExceptionDataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getStoreExceptionDataEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { di, event } = payload;
+  // The dump contains full user storage, so this admin-only debug read must not be reachable by id
+  // alone. The anonymous write path (POST /api/exception) stays open for crash reports.
+  if (params.key !== (await di.secrets.getApiKey())) {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
+  const id = params.id;
+  const env = Utils_getEnv();
+  const bucket = env === "dev" ? `${LftS3Buckets.exceptions}dev` : LftS3Buckets.exceptions;
+  const key = `exceptions/${id}`;
+  const url = await di.s3.getPresignedDownloadUrl({ bucket, key, expiresIn: 300 });
+  return ResponseUtils_json(200, event, { url });
+};
+
+const getPlannerShorturlEndpoint = Endpoint.build("/n/:id");
+const getPlannerShorturlHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getPlannerShorturlEndpoint
+> = async ({ payload, match: { params } }) => {
+  const di = payload.di;
+  const id = params.id;
+  return shorturlRedirect(di, id);
+};
+
+const getProgramShorturlEndpoint = Endpoint.build("/p/:id");
+const getProgramShorturlHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProgramShorturlEndpoint
+> = async ({ payload, match: { params } }) => {
+  const di = payload.di;
+  const id = params.id;
+  let program: IExportedProgram | undefined;
+  const isMobile = Mobile_isMobile(payload.event.headers["user-agent"] || payload.event.headers["User-Agent"] || "");
+  const urlString = await new UrlDao(di).get(id);
+  if (urlString) {
+    const url = UrlUtils_build(urlString, "https://www.liftosaur.com");
+    const data = url.searchParams.get("data");
+    const source = url.searchParams.get("s") || undefined;
+    if (data) {
+      try {
+        const exportedProgramJson = await NodeEncoder_decode(data);
+        const result = await ImportExporter_getExportedProgram(di.fetch, exportedProgramJson);
+        if (result.success) {
+          program = result.data;
+          let user: ILimitedUserDao | undefined;
+          let account: IAccount | undefined;
+          const userResult = await getUserAccount(payload, { withPrograms: true, withBodyweight: true });
+          if (userResult.success) {
+            ({ user, account } = userResult.data);
+          }
+          const storage = user?.storage ? runMigrations(user.storage) : undefined;
+
+          return {
+            statusCode: 200,
+            body: renderProgramHtml(
+              di.fetch,
+              isMobile,
+              getUserAgent(payload.event),
+              false,
+              program,
+              account,
+              source,
+              storage
+            ),
+            headers: { "content-type": "text/html" },
+          };
+        } else {
+          di.log.log(result.error);
+        }
+      } catch (e) {
+        di.log.log(e);
+      }
+    }
+  }
+  return ResponseUtils_json(404, payload.event, { error: "Not Found" });
+};
+
+async function shorturlRedirect(di: IDI, id: string): Promise<APIGatewayProxyResult> {
+  const url = await new UrlDao(di).get(id);
+  if (url) {
+    const header: Record<string, string> = { location: url, "content-type": "text/html" };
+    return {
+      statusCode: 302,
+      body: "",
+      headers: header,
+    };
+  } else {
+    const header: Record<string, string> = { "content-type": "text/html" };
+    return {
+      statusCode: 404,
+      body: "Not Found",
+      headers: header,
+    };
+  }
+}
+
+const postShortUrlEndpoint = Endpoint.build("/shorturl/:type");
+const postShortUrlHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postShortUrlEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  const { type } = params;
+  const json = getBodyJson(event);
+  let url = json.url;
+  const src = json.src;
+  const userid = await getCurrentUserId(event, di);
+  if (url == null || typeof url !== "string") {
+    return ResponseUtils_json(400, event, {});
+  }
+  if (userid || src) {
+    const uriResult = UrlUtils_buildSafe(url, "https://www.liftosaur.com");
+    if (uriResult.success) {
+      const uri = uriResult.data;
+      if (userid) {
+        uri.searchParams.set("u", userid || "anonymous");
+      }
+      if (src) {
+        uri.searchParams.set("s", src);
+      }
+      url = uri.toString();
+    }
+  }
+  const id = await new UrlDao(di).put(url, userid);
+  const newUrl = `/${type}/${id}`;
+
+  return ResponseUtils_json(200, event, { url: newUrl });
+};
+
+const getRepMaxEndpoint = Endpoint.build("/rep-max-calculator");
+const getRepMaxHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getRepMaxEndpoint> = async ({ payload }) =>
+  showRepMax(payload, undefined);
+
+const repmaxpairs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const repmaxpairswords = repmaxpairs.map((reps) => {
+  const word = MathUtils_toWord(reps);
+  return [
+    Endpoint.build(`/${word}-rep-max-calculator`),
+    async ({ payload }: { payload: IPayload }) => showRepMax(payload, reps),
+  ] as const;
+});
+const repmaxpairnums = repmaxpairs.map((reps) => {
+  return [
+    Endpoint.build(`/${reps}rm`),
+    async ({}: {}) => {
+      const word = MathUtils_toWord(reps);
+      return {
+        statusCode: 301,
+        body: "",
+        headers: { "content-type": "text/html", location: `/${word != null ? `${word}-` : ""}rep-max-calculator` },
+      };
+    },
+  ] as const;
+});
+
+async function showRepMax(payload: IPayload, reps?: number): Promise<APIGatewayProxyResult> {
+  const { di } = payload;
+  const isLoggedIn = getIsLoggedIn(payload.event);
+  return {
+    statusCode: 200,
+    body: renderRepMaxHtml(di.fetch, reps, isLoggedIn),
+    headers: { "content-type": "text/html", "cache-control": "public, s-maxage=86400, max-age=0" },
+  };
+}
+
+const rollbar = new Rollbar({
+  accessToken: "bcdd086a019f49edb69f790a854b44dd",
+  captureUncaught: true,
+  captureUnhandledRejections: true,
+  payload: {
+    environment: `${Utils_getEnv()}-lambda`,
+    client: {
+      javascript: {
+        source_map_enabled: true,
+        code_version: process.env.FULL_COMMIT_HASH,
+        guess_uncaught_frames: true,
+      },
+    },
+  },
+  checkIgnore: RollbarUtils_checkIgnore,
+});
+
+export const getLftStatsLambdaDev = (
+  diBuilder: () => IDI
+): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
+  rollbar.lambdaHandler(
+    async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event)
+  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+
+export const getLftStatsLambda = (
+  diBuilder: () => IDI
+): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
+  rollbar.lambdaHandler(
+    async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event)
+  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+
+export const getLftReconcilePaymentsLambdaDev = (
+  diBuilder: () => IDI
+): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
+  rollbar.lambdaHandler(
+    async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event)
+  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+
+export const getLftReconcilePaymentsLambda = (
+  diBuilder: () => IDI
+): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
+  rollbar.lambdaHandler(
+    async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event)
+  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+
+export const reconcilePaymentsLambdaHandler = (
+  diBuilder: () => IDI
+): ((event: {}) => Promise<APIGatewayProxyResult>) => {
+  return async () => {
+    const di = diBuilder();
+    const reconciler = new PaymentReconciler(di);
+    const result = await reconciler.reconcile();
+
+    const bucket = `${LftS3Buckets.stats}${Utils_getEnv() === "dev" ? "dev" : ""}`;
+    await di.s3.putObject({
+      bucket,
+      key: `reconciliation/${DateUtils_formatYYYYMMDD(new Date())}.json`,
+      body: JSON.stringify(result, null, 2),
+      opts: { contentType: "application/json" },
+    });
+
+    return {
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: "done", result }),
+    };
+  };
+};
+
+export const statsLambdaHandler = (diBuilder: () => IDI): ((event: {}) => Promise<APIGatewayProxyResult>) => {
+  return async () => {
+    const di = diBuilder();
+    const [year, month] = DateUtils_yearAndMonth(Date.now());
+    const userIds = await new LogDao(di).getUserIdsWithActionInMonth(year, month, "ls-finish-workout");
+    const users = await new UserDao(di).getStatsFieldsByIds(userIds);
+    const usersById = CollectionUtils_groupByKeyUniq(users, "id");
+    const summaries = await new LogDao(di).getSummariesForUsers(userIds);
+
+    const usersData: IStatsUserData[] = CollectionUtils_sortByExpr(
+      summaries.map((summary) => {
+        const user = usersById[summary.userId];
+        const userSubscriptions = user?.storage?.subscription;
+        const isSubscribed =
+          userSubscriptions != null
+            ? ClientSubscription.Subscriptions_hasSubscription(userSubscriptions)
+            : summary.hasSubscriptions;
+        return {
+          userId: summary.userId,
+          email: user?.email,
+          userTs: user?.createdAt,
+          isSubscribed: isSubscribed,
+          firstAction: summary.firstAction,
+          lastAction: summary.lastAction,
+        };
+      }),
+      (u) => u.lastAction.ts,
+      true
+    );
+
+    let lastDay;
+    const data: IStatsUserData[][] = [];
+    for (const user of usersData) {
+      const day = new Date(user.lastAction.ts).getUTCDate();
+      if (lastDay == null || lastDay !== day) {
+        data.push([]);
+        lastDay = day;
+      }
+      const dayGroup = data[data.length - 1];
+      dayGroup.push(user);
+    }
+
+    for (const dayGroup of data) {
+      dayGroup.sort((a, b) => {
+        const isANew = getIsNew(a);
+        const isANewUser = getIsNewUser(a);
+        const isBNew = getIsNew(b);
+        const isBNewUser = getIsNewUser(b);
+
+        if ((isANew || isANewUser) && !(isBNew || isBNewUser)) {
+          return -1;
+        } else if (!(isANew || isANewUser) && (isBNew || isBNewUser)) {
+          return 1;
+        } else {
+          return b.lastAction.ts - a.lastAction.ts;
+        }
+      });
+    }
+
+    const activeMontlyCount = data.reduce((acc, dayGroup) => acc + dayGroup.length, 0);
+    const activeMonthlySubscribedCount = data.reduce(
+      (acc, dayGroup) => acc + dayGroup.filter((i) => i.isSubscribed).length,
+      0
+    );
+    const activeMonthlyRegisteredCount = data.reduce(
+      (acc, dayGroup) => acc + dayGroup.filter((i) => i.email != null).length,
+      0
+    );
+    const newThisMonth = data.reduce(
+      (acc, dayGroup) => acc + dayGroup.filter((i) => Date.now() - i.firstAction.ts < 1000 * 60 * 60 * 24 * 30).length,
+      0
+    );
+    const newRegisteredThisMonth = data.reduce(
+      (acc, dayGroup) =>
+        acc + dayGroup.filter((i) => i.userTs != null && Date.now() - i.userTs < 1000 * 60 * 60 * 24 * 30).length,
+      0
+    );
+
+    const dayGroup = data[0];
+    const activeCount = dayGroup.length;
+    const activeSubscribedCount = dayGroup.filter((i) => i.isSubscribed).length;
+    const activeRegisteredCount = dayGroup.filter((i) => i.email != null).length;
+    const newThisDay = dayGroup.filter((i) => Date.now() - i.firstAction.ts < 1000 * 60 * 60 * 24).length;
+    const newRegisteredThisDay = dayGroup.filter(
+      (i) => i.userTs != null && Date.now() - i.userTs < 1000 * 60 * 60 * 24
+    ).length;
+
+    const bucket = `${LftS3Buckets.stats}${Utils_getEnv() === "dev" ? "dev" : ""}`;
+    const statsFile = await di.s3.getObject({ bucket, key: "stats.csv" });
+    let stats = statsFile?.toString();
+    if (!stats) {
+      stats =
+        "date,monthly,monthly_subscribed,monthly_registered,monthly_new,monthly_new_registered,daily,daily_subscribed,daily_registered,daily_new,daily_new_registered\n";
+    }
+    stats += `${DateUtils_formatYYYYMMDD(
+      new Date()
+    )},${activeMontlyCount},${activeMonthlySubscribedCount},${activeMonthlyRegisteredCount},${newThisMonth},${newRegisteredThisMonth},${activeCount},${activeSubscribedCount},${activeRegisteredCount},${newThisDay},${newRegisteredThisDay}\n`;
+    await di.s3.putObject({
+      bucket: bucket,
+      key: "stats.csv",
+      body: stats,
+      opts: { contentType: "text/csv" },
+    });
+
+    return {
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        data: "done",
+      }),
+    };
+  };
+};
+
+function getIsNew(item: IStatsUserData): boolean {
+  const firstActionDate = new Date(item.firstAction.ts);
+  const lastActionDate = new Date(item.lastAction.ts);
+  return (
+    firstActionDate.getUTCFullYear() === lastActionDate.getUTCFullYear() &&
+    firstActionDate.getUTCMonth() === lastActionDate.getUTCMonth() &&
+    firstActionDate.getUTCDate() === lastActionDate.getUTCDate()
+  );
+}
+
+function getIsNewUser(item: IStatsUserData): boolean {
+  const lastActionDate = new Date(item.lastAction.ts);
+  const userDate = item.userTs && new Date(item.userTs);
+  return !!(
+    userDate &&
+    userDate.getUTCFullYear() === lastActionDate.getUTCFullYear() &&
+    userDate.getUTCMonth() === lastActionDate.getUTCMonth() &&
+    userDate.getUTCDate() === lastActionDate.getUTCDate()
+  );
+}
+
+export type IHandler = (event: APIGatewayProxyEvent, context: unknown) => Promise<APIGatewayProxyResult>;
+type IRollbarHandler = Rollbar.LambdaHandler<APIGatewayProxyEvent, APIGatewayProxyResult, unknown>;
+export const getHandler = (diBuilder: () => IDI): IRollbarHandler => {
+  return rollbar.lambdaHandler(getRawHandler(diBuilder));
+};
+
+export const getRawHandler = (diBuilder: () => IDI): IHandler => {
+  return async (event: APIGatewayProxyEvent, context) => {
+    const di = diBuilder();
+    if (event.httpMethod === "OPTIONS") {
+      if (event.path.startsWith("/api/v1/") || event.path === "/mcp" || event.path.startsWith("/oauth/")) {
+        return {
+          statusCode: 200,
+          body: "",
+          headers: {
+            "access-control-allow-origin": "*",
+            "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
+            "access-control-allow-methods": "OPTIONS,GET,POST,PUT,DELETE",
+          },
+        };
+      }
+      return { statusCode: 200, body: "", headers: ResponseUtils_getHeaders(event) };
+    }
+    di.log.id = UidFactory_generateUid(4);
+    const time = Date.now();
+    const userid = await getCurrentUserId(event, di);
+    // Lambda containers are reused across users, so anything Rollbar accumulated in telemetry during
+    // a previous invocation would otherwise ride along on this user's error report.
+    // @ts-ignore
+    if (rollbar?.client?.telemeter?.queue) {
+      // @ts-ignore
+      rollbar.client.telemeter.queue = [];
+    }
+    if (userid) {
+      di.log.setUser(userid);
+    } else {
+      di.log.setUser("anonymous");
+    }
+    di.log.log("--------> Starting request", event.httpMethod, event.path);
+    di.log.log("User Agent:", event.headers["user-agent"] || event.headers["User-Agent"] || "");
+
+    const host = ResponseUtils_getHost(event);
+    const isNonProdDomain = host.startsWith("api3") || host.startsWith("local") || process.env.IS_DEV === "true";
+    if (isNonProdDomain && event.path === "/robots.txt") {
+      return {
+        statusCode: 200,
+        body: "User-agent: *\nDisallow: /\n",
+        headers: { "content-type": "text/plain" },
+      };
+    }
+
+    const request: IPayload = { event, di };
+    let r = new Router<IPayload, APIGatewayProxyResult>(request)
+      .get(getUpdatesManifestEndpoint, getUpdatesManifestHandler)
+      .get(getGeoEndpoint, getGeoHandler)
+      .get(getMainEndpoint, getMainHandler)
+      .get(getStoreExceptionDataEndpoint, getStoreExceptionDataHandler)
+      .post(postStoreExceptionDataEndpoint, postStoreExceptionDataHandler)
+      .get(getProgramShorturlEndpoint, getProgramShorturlHandler)
+      .get(getPlannerShorturlEndpoint, getPlannerShorturlHandler)
+      .get(getProgramShorturlResponseEndpoint, getProgramShorturlResponseHandler)
+      .get(getPlannerShorturlResponseEndpoint, getPlannerShorturlResponseHandler)
+      .get(getPlanShorturlResponseEndpoint, getPlanShorturlResponseHandler)
+      .get(getHistoryEndpoint, getHistoryHandler)
+      .get(getUploadedImagesEndpoint, getUploadedImagesHandler)
+      .get(getDashboardsAffiliatesEndpoint, getDashboardsAffiliatesHandler)
+      .get(getLoginEndpoint, getLoginHandler)
+      .post(postSaveProgramEndpoint, postSaveProgramHandler)
+      .post(postCreateDashboardEndpoint, postCreateDashboardHandler)
+      .post(postSelectDashboardEndpoint, postSelectDashboardHandler)
+      .post(postUpdateDashboardEndpoint, postUpdateDashboardHandler)
+      .get(getStatsEndpoint, getStatsHandler)
+      .post(postSaveSettingsEndpoint, postSaveSettingsHandler)
+      .get(getDashboardsUsersEndpoint, getDashboardsUsersHandler)
+      .get(getAffiliatesEndpoint, getAffiliatesHandler)
+      .get(getAiPromptEndpoint, getAiPromptHandler)
+      .post(postShortUrlEndpoint, postShortUrlHandler)
+      .get(getAdminCheckEndpoint, getAdminCheckHandler)
+      .post(postAddFreeUserEndpoint, postAddFreeUserHandler)
+      .post(postClaimFreeUserEndpoint, postClaimFreeUserHandler)
+      .post(postImageUploadUrlEndpoint, postImageUploadUrlHandler)
+      .post(postSync2Endpoint, postSync2Handler)
+      .post(postDebugSessionEndpoint, postDebugSessionHandler)
+      .post(postSetupTestAccountEndpoint, postSetupTestAccountHandler)
+      .post(postDevFriendPushEndpoint, postDevFriendPushHandler)
+      .get(getStorageEndpoint, getStorageHandler)
+      .get(getDebugInfoEndpoint, getDebugInfoHandler)
+      .get(getPlannerEndpoint, getPlannerHandler)
+      .get(getFriendPlannerEndpoint, getFriendPlannerHandler)
+      .get(getProgramEndpoint, getProgramHandler)
+      .get(getUserProgramsEndpoint, getUserProgramsHandler)
+      .get(getUserProgramEndpoint, getUserProgramHandler)
+      .get(getUserDashboardsEndpoint, getUserDashboardsHandler)
+      .get(getUserFriendsEndpoint, getUserFriendsHandler)
+      .get(getUserFriendWorkoutsEndpoint, getUserFriendWorkoutsHandler)
+      .get(getUserFriendProgramsEndpoint, getUserFriendProgramsHandler)
+      .get(getUserDashboardEndpoint, getUserDashboardHandler)
+      .get(getUserAffiliatesEndpoint, getUserAffiliatesHandler)
+      .get(getProgramRevisionsEndpoint, getProgramRevisionsHandler)
+      .get(getProgramRevisionEndpoint, getProgramRevisionHandler)
+      .get(getMusclesForExerciseEndpoint, getMusclesForExerciseHandler)
+      .post(postVerifyAppleReceiptEndpoint, postVerifyAppleReceiptHandler)
+      .post(postVerifyGooglePurchaseTokenEndpoint, postVerifyGooglePurchaseTokenHandler)
+      .post(postAppleWebhookEndpoint, postAppleWebhookHandler)
+      .post(postGoogleWebhookEndpoint, postGoogleWebhookHandler)
+      .post(googleLoginEndpoint, googleLoginHandler)
+      .post(appleLoginEndpoint, appleLoginHandler)
+      .post(emailSignupEndpoint, emailSignupHandler)
+      .post(emailSigninEndpoint, emailSigninHandler)
+      .post(checkLoginEndpoint, checkLoginHandler)
+      .post(verifyEmailEndpoint, verifyEmailHandler)
+      .post(forgotPasswordEndpoint, forgotPasswordHandler)
+      .post(resetPasswordEndpoint, resetPasswordHandler)
+      .post(changePasswordEndpoint, changePasswordHandler)
+      .get(getVerifyEmailPageEndpoint, getVerifyEmailPageHandler)
+      .get(getResetPasswordPageEndpoint, getResetPasswordPageHandler)
+      .post(appleCallbackMobileEndpoint, appleCallbackMobileHandler)
+      .post(signoutEndpoint, signoutHandler)
+      .get(getProgramsEndpoint, getProgramsHandler)
+      .get(getHistoryRecordEndpoint, getHistoryRecordHandler)
+      .get(getHistoryRecordImageEndpoint, getHistoryRecordImageHandler)
+      .post(logEndpoint, logHandler)
+      .post(postVerifySubscriptionKeyEndpoint, postVerifySubscriptionKeyHandler)
+
+      .get(getProfileEndpoint, getProfileHandler)
+      .get(getProfileImageEndpoint, getProfileImageHandler)
+      .get(getAdminUsersEndpoint, getAdminUsersHandler)
+      .get(getAdminLogsEndpoint, getAdminLogsHandler)
+      .get(getAllDocsEndpoint, getAllDocsHandler)
+      .get(getDocDetailsEndpoint, getDocDetailsHandler)
+      .get(getAllFeaturesEndpoint, getAllFeaturesHandler)
+      .get(getFeatureDetailsEndpoint, getFeatureDetailsHandler)
+      .get(getAllProgramsEndpoint, getAllProgramsHandler)
+      .get(getProgramDetailsEndpoint, getProgramDetailsHandler)
+      .get(getProgramPreviewEndpoint, getProgramPreviewHandler)
+      .get(getUserContextEndpoint, getUserContextHandler)
+      .get(getProgramImageEndpoint, getProgramImageHandler)
+      .post(postCreateCouponEndpoint, postCreateCouponHandler)
+      .post(postClaimCouponEndpoint, postClaimCouponHandler)
+      .post(saveDebugEndpoint, saveDebugHandler)
+      .post(debugLogsEndpoint, debugLogsHandler)
+      .post(postWatchCrashReportEndpoint, postWatchCrashReportHandler)
+      .post(postBackupAccountEndpoint, postBackupAccountHandler)
+      .delete(deleteAccountEndpoint, deleteAccountHandler)
+      .delete(deleteProgramEndpoint, deleteProgramHandler)
+      .delete(deleteDashboardEndpoint, deleteDashboardHandler)
+      .get(getExerciseEndpoint, getExerciseHandler)
+      .get(getAllExercisesEndpoint, getAllExercisesHandler)
+      .get(getRepMaxEndpoint, getRepMaxHandler)
+      .post(postReceiveAdAttrEndpoint, postReceiveAdAttrHandler)
+      .post(postEventEndpoint, postEventHandler)
+      .get(getDashboardsUserEventsEndpoint, getDashboardsUserEventsHandler)
+      .get(getDashboardsUserEndpoint, getDashboardsUserHandler)
+      .get(getDashboardsPaymentsEndpoint, getDashboardsPaymentsHandler)
+      .post(postBatchEventsEndpoint, postBatchEventsHandler)
+      .post(postApiKeysEndpoint, postApiKeysHandler)
+      .get(getApiKeysEndpoint, getApiKeysHandler)
+      .delete(deleteApiKeyEndpoint, deleteApiKeyHandler)
+      .post(postPushTokenEndpoint, postPushTokenHandler)
+      .delete(deletePushTokenEndpoint, deletePushTokenHandler)
+      .post(postFollowInviteEndpoint, postFollowInviteHandler)
+      .get(getFollowInviteEndpoint, getFollowInviteHandler)
+      .post(postFollowInviteRequestEndpoint, postFollowInviteRequestHandler)
+      .get(getFollowsEndpoint, getFollowsHandler)
+      .post(postFollowApproveEndpoint, postFollowApproveHandler)
+      .delete(deleteFollowRequestEndpoint, deleteFollowRequestHandler)
+      .put(putFollowerPermissionsEndpoint, putFollowerPermissionsHandler)
+      .delete(deleteFollowingEndpoint, deleteFollowingHandler)
+      .delete(deleteFollowerEndpoint, deleteFollowerHandler)
+      .get(getFeedEndpoint, getFeedHandler)
+      .get(getFriendProgramsEndpoint, getFriendProgramsHandler)
+      .get(getFriendProgramEndpoint, getFriendProgramHandler)
+      .post(postFriendProgramEndpoint, postFriendProgramHandler)
+      .get(getProgramEditsEndpoint, getProgramEditsHandler)
+      .post(postProgramEditsSeenEndpoint, postProgramEditsSeenHandler)
+      .get(getProgramEditsForProgramEndpoint, getProgramEditsForProgramHandler)
+      .get(getOwnReactionsEndpoint, getOwnReactionsHandler)
+      .put(putReactionEndpoint, putReactionHandler)
+      .delete(deleteReactionEndpoint, deleteReactionHandler)
+      .get(getFollowInvitePageEndpoint, getFollowInvitePageHandler)
+      .get(getV1HistoryEndpoint, getV1HistoryHandler)
+      .get(getV1HistoryRecordEndpoint, getV1HistoryRecordHandler)
+      .post(postV1HistoryEndpoint, postV1HistoryHandler)
+      .put(putV1HistoryEndpoint, putV1HistoryHandler)
+      .delete(deleteV1HistoryEndpoint, deleteV1HistoryHandler)
+      .get(getV1FriendsEndpoint, getV1FriendsHandler)
+      .get(getV1FriendHistoryEndpoint, getV1FriendHistoryHandler)
+      .get(getV1FriendHistoryRecordEndpoint, getV1FriendHistoryRecordHandler)
+      .get(getV1FriendProgramsEndpoint, getV1FriendProgramsHandler)
+      .get(getV1FriendProgramEndpoint, getV1FriendProgramHandler)
+      .put(putV1FriendProgramEndpoint, putV1FriendProgramHandler)
+      .get(getV1ProgramsEndpoint, getV1ProgramsHandler)
+      .get(getV1ProgramEndpoint, getV1ProgramHandler)
+      .post(postV1ProgramEndpoint, postV1ProgramHandler)
+      .put(putV1ProgramEndpoint, putV1ProgramHandler)
+      .delete(deleteV1ProgramEndpoint, deleteV1ProgramHandler)
+      .post(postV1PlaygroundEndpoint, postV1PlaygroundHandler)
+      .post(postV1ProgramStatsEndpoint, postV1ProgramStatsHandler)
+      .get(getV1DashboardsEndpoint, getV1DashboardsHandler)
+      .get(getV1DashboardEndpoint, getV1DashboardHandler)
+      .post(postV1DashboardEndpoint, postV1DashboardHandler)
+      .put(putV1DashboardEndpoint, putV1DashboardHandler)
+      .delete(deleteV1DashboardEndpoint, deleteV1DashboardHandler)
+      .post(postV1DashboardPreviewEndpoint, postV1DashboardPreviewHandler)
+      .get(getV1EquipmentListEndpoint, getV1EquipmentListHandler)
+      .get(getV1EquipmentEndpoint, getV1EquipmentHandler)
+      .post(postV1EquipmentEndpoint, postV1EquipmentHandler)
+      .put(putV1EquipmentEndpoint, putV1EquipmentHandler)
+      .get(getV1GymsEndpoint, getV1GymsHandler)
+      .post(postV1GymEndpoint, postV1GymHandler)
+      .put(putV1GymEndpoint, putV1GymHandler)
+      .delete(deleteV1GymEndpoint, deleteV1GymHandler)
+      .get(getV1ExerciseDataListEndpoint, getV1ExerciseDataListHandler)
+      .get(getV1ExerciseDataEndpoint, getV1ExerciseDataHandler)
+      .put(putV1ExerciseDataEndpoint, putV1ExerciseDataHandler)
+      .delete(deleteV1ExerciseDataEndpoint, deleteV1ExerciseDataHandler)
+      .get(getV1MeasurementsListEndpoint, getV1MeasurementsListHandler)
+      .get(getV1MeasurementEndpoint, getV1MeasurementHandler)
+      .post(postV1MeasurementEndpoint, postV1MeasurementHandler)
+      .put(putV1MeasurementEndpoint, putV1MeasurementHandler)
+      .delete(deleteV1MeasurementEndpoint, deleteV1MeasurementHandler)
+      .get(getV1WorkoutNextEndpoint, getV1WorkoutNextHandler)
+      .post(postV1WorkoutStartEndpoint, postV1WorkoutStartHandler)
+      .get(getV1WorkoutCurrentEndpoint, getV1WorkoutCurrentHandler)
+      .delete(deleteV1WorkoutCurrentEndpoint, deleteV1WorkoutCurrentHandler)
+      .post(postV1WorkoutSetEndpoint, postV1WorkoutSetHandler)
+      .post(postV1WorkoutSetsEndpoint, postV1WorkoutSetsHandler)
+      .post(postV1WorkoutFinishEndpoint, postV1WorkoutFinishHandler)
+      .get(getV1SettingsEndpoint, getV1SettingsHandler)
+      .get(getMcpEndpoint, getMcpHandler)
+      .delete(deleteMcpEndpoint, deleteMcpHandler)
+      .post(postMcpEndpoint, postMcpHandler)
+      .get(getProtectedResourceEndpoint, getProtectedResourceHandler)
+      .get(getProtectedResourceMcpEndpoint, getProtectedResourceHandler)
+      .get(getAuthServerMetadataEndpoint, getAuthServerMetadataHandler)
+      .post(postOauthRegisterEndpoint, postOauthRegisterHandler)
+      .get(getOauthAuthorizeEndpoint, getOauthAuthorizeHandler)
+      .post(postOauthAuthorizeEndpoint, postOauthAuthorizeHandler)
+      .post(postOauthTokenEndpoint, postOauthTokenHandler);
+    r = repmaxpairswords.reduce((memo, [endpoint, handler]) => memo.get(endpoint, handler), r);
+    r = repmaxpairnums.reduce((memo, [endpoint, handler]) => memo.get(endpoint, handler), r);
+
+    const url = UrlUtils_build(event.path, "http://example.com");
+    for (const key of Object.keys(event.queryStringParameters || {})) {
+      const value = (event.queryStringParameters || {})[key];
+      url.searchParams.set(key, value || "");
+    }
+    let resp: IEither<APIGatewayProxyResult, string>;
+    let errorStatus = 404;
+    try {
+      resp = await r.route(event.httpMethod as Method, url.pathname + url.search);
+    } catch (e) {
+      console.error(e);
+      di.log.log(e);
+      errorStatus = 500;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        rollbar.error(e as any, undefined, { person: { id: userid } });
+      } catch (_e) {}
+      resp = { success: false, error: "Internal Server Error" };
+    }
+    di.log.log(
+      "<-------- Responding for",
+      event.httpMethod,
+      event.path,
+      resp.success ? resp.data.statusCode : errorStatus,
+      resp.success ? `${resp.data.body.length}b` : undefined,
+      `${Date.now() - time}ms`
+    );
+    const result = resp.success
+      ? resp.data
+      : { statusCode: errorStatus, headers: ResponseUtils_getHeaders(event), body: resp.error };
+    if (isNonProdDomain) {
+      result.headers = { ...result.headers, "X-Robots-Tag": "noindex" };
+    }
+    return result;
+  };
+};

@@ -1,0 +1,887 @@
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import { Endpoint, RouteHandler } from "yatro";
+import { IDI } from "../utils/di";
+import { withApiAuth, ResponseUtils_apiJson, apiError, IApiKeyAuthResult } from "../utils/apiKeyAuth";
+import {
+  ApiV1_getHistory,
+  ApiV1_getHistoryRecord,
+  ApiV1_createHistory,
+  ApiV1_updateHistory,
+  ApiV1_deleteHistory,
+  ApiV1_listPrograms,
+  ApiV1_getProgram,
+  ApiV1_createProgram,
+  ApiV1_updateProgram,
+  ApiV1_deleteProgram,
+  ApiV1_playground,
+  ApiV1_programStats,
+  IApiError,
+} from "../utils/apiv1";
+import {
+  ApiV1_listDashboards,
+  ApiV1_getDashboard,
+  ApiV1_createDashboard,
+  ApiV1_updateDashboard,
+  ApiV1_deleteDashboard,
+  ApiV1_previewDashboard,
+} from "../utils/apiv1Dashboards";
+import {
+  DashboardApi_parseCreate,
+  DashboardApi_parsePreview,
+  DashboardApi_parseUpdate,
+} from "../../src/models/dashboardApi";
+import {
+  ApiV1_listGyms,
+  ApiV1_createGym,
+  ApiV1_updateGym,
+  ApiV1_deleteGym,
+  ApiV1_listEquipment,
+  ApiV1_getEquipment,
+  ApiV1_updateEquipment,
+  ApiV1_createCustomEquipment,
+} from "../utils/apiv1Equipment";
+import {
+  ApiV1_listExerciseData,
+  ApiV1_getExerciseData,
+  ApiV1_setExerciseData,
+  ApiV1_deleteExerciseData,
+} from "../utils/apiv1ExerciseData";
+import {
+  ApiV1_listMeasurements,
+  ApiV1_getMeasurement,
+  ApiV1_addMeasurement,
+  ApiV1_updateMeasurement,
+  ApiV1_deleteMeasurement,
+} from "../utils/apiv1Measurements";
+import {
+  ApiV1_getNextWorkout,
+  ApiV1_startWorkout,
+  ApiV1_getCurrentWorkout,
+  ApiV1_writeSets,
+  ApiV1_finishWorkout,
+  ApiV1_discardWorkout,
+  ApiV1_getWorkoutSettings,
+  IApiWorkoutContext,
+} from "../utils/apiv1Workout";
+import { EventDao } from "../dao/eventDao";
+import {
+  ApiV1_getFriendHistory,
+  ApiV1_getFriendHistoryRecord,
+  ApiV1_getFriendProgram,
+  ApiV1_listFriendPrograms,
+  ApiV1_listFriends,
+  ApiV1_updateFriendProgram,
+} from "../utils/apiv1Friends";
+
+interface IPayload {
+  event: APIGatewayProxyEvent;
+  di: IDI;
+}
+
+function getWorkoutContext(event: APIGatewayProxyEvent): IApiWorkoutContext {
+  const headers = event.headers || {};
+  const header = (name: string): string | undefined => headers[name] ?? headers[name.toLowerCase()];
+  return {
+    client: header("X-Liftosaur-Client"),
+    deviceId: header("X-Liftosaur-Device-Id"),
+  };
+}
+
+function getBodyJson(event: APIGatewayProxyEvent): Record<string, unknown> {
+  try {
+    return JSON.parse(Buffer.from(event.body || "e30=", "base64").toString("utf8"));
+  } catch (e) {
+    return JSON.parse(event.body || "{}");
+  }
+}
+
+function apiErrorFromResult(e: IApiError): APIGatewayProxyResult {
+  return apiError(e.status, e.code, e.message, e.details);
+}
+
+function resultToResponse<T>(
+  result: { success: true; data: T } | { success: false; error: IApiError },
+  status: number = 200
+): APIGatewayProxyResult {
+  if (!result.success) {
+    return apiErrorFromResult(result.error);
+  }
+  return ResponseUtils_apiJson(status, { data: result.data });
+}
+
+function withApiAuthAndEvent(
+  event: APIGatewayProxyEvent,
+  di: IDI,
+  eventName: string,
+  handler: (auth: IApiKeyAuthResult) => Promise<APIGatewayProxyResult>
+): Promise<APIGatewayProxyResult> {
+  return withApiAuth(event, di, async (auth) => {
+    new EventDao(di).post({
+      type: "event",
+      userId: auth.userId,
+      timestamp: Date.now(),
+      name: eventName,
+      commithash: process.env.COMMIT_HASH ?? "",
+    });
+    return handler(auth);
+  });
+}
+
+// --- History Endpoints ---
+
+export const getV1HistoryEndpoint = Endpoint.build("/api/v1/history", {
+  startDate: "string?",
+  endDate: "string?",
+  limit: "string?",
+  cursor: "string?",
+});
+export const getV1HistoryHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getV1HistoryEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-history", async (auth) => {
+    return resultToResponse(await ApiV1_getHistory(auth.userId, auth.user, params, di));
+  });
+};
+
+export const getV1HistoryRecordEndpoint = Endpoint.build("/api/v1/history/:id");
+export const getV1HistoryRecordHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1HistoryRecordEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-history-record", async (auth) => {
+    return resultToResponse(await ApiV1_getHistoryRecord(auth.userId, auth.user, parseInt(params.id, 10), di));
+  });
+};
+
+export const postV1HistoryEndpoint = Endpoint.build("/api/v1/history");
+export const postV1HistoryHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1HistoryEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-create-history", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.text) {
+      return apiError(400, "invalid_input", "Missing 'text' field");
+    }
+    return resultToResponse(
+      await ApiV1_createHistory(auth.userId, auth.user, body.text as string, auth.deviceId, di),
+      201
+    );
+  });
+};
+
+export const putV1HistoryEndpoint = Endpoint.build("/api/v1/history/:id");
+export const putV1HistoryHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof putV1HistoryEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-history", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.text) {
+      return apiError(400, "invalid_input", "Missing 'text' field");
+    }
+    return resultToResponse(
+      await ApiV1_updateHistory(auth.userId, auth.user, parseInt(params.id, 10), body.text as string, auth.deviceId, di)
+    );
+  });
+};
+
+export const deleteV1HistoryEndpoint = Endpoint.build("/api/v1/history/:id");
+export const deleteV1HistoryHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1HistoryEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-history", async (auth) => {
+    return resultToResponse(
+      await ApiV1_deleteHistory(auth.userId, auth.user, parseInt(params.id, 10), auth.deviceId, di)
+    );
+  });
+};
+
+// --- Friends Endpoints ---
+
+export const getV1FriendsEndpoint = Endpoint.build("/api/v1/friends");
+export const getV1FriendsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getV1FriendsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-friends", async (auth) => {
+    return resultToResponse(await ApiV1_listFriends(auth.userId, di));
+  });
+};
+
+export const getV1FriendHistoryEndpoint = Endpoint.build("/api/v1/friends/:userId/history", {
+  startDate: "string?",
+  endDate: "string?",
+  limit: "string?",
+  cursor: "string?",
+});
+export const getV1FriendHistoryHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1FriendHistoryEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-friend-history", async (auth) => {
+    const { userId, ...query } = params;
+    return resultToResponse(await ApiV1_getFriendHistory(auth.userId, userId, query, di));
+  });
+};
+
+export const getV1FriendHistoryRecordEndpoint = Endpoint.build("/api/v1/friends/:userId/history/:id");
+export const getV1FriendHistoryRecordHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1FriendHistoryRecordEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-friend-history-record", async (auth) => {
+    return resultToResponse(
+      await ApiV1_getFriendHistoryRecord(auth.userId, params.userId, parseInt(params.id, 10), di)
+    );
+  });
+};
+
+export const getV1FriendProgramsEndpoint = Endpoint.build("/api/v1/friends/:userId/programs");
+export const getV1FriendProgramsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1FriendProgramsEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-friend-programs", async (auth) => {
+    return resultToResponse(await ApiV1_listFriendPrograms(auth.userId, params.userId, di));
+  });
+};
+
+export const getV1FriendProgramEndpoint = Endpoint.build("/api/v1/friends/:userId/programs/:id");
+export const getV1FriendProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1FriendProgramEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-friend-program", async (auth) => {
+    return resultToResponse(await ApiV1_getFriendProgram(auth.userId, params.userId, params.id, di));
+  });
+};
+
+export const putV1FriendProgramEndpoint = Endpoint.build("/api/v1/friends/:userId/programs/:id");
+export const putV1FriendProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putV1FriendProgramEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-friend-program", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(
+      await ApiV1_updateFriendProgram(auth.userId, params.userId, params.id, body.text, body.base, di)
+    );
+  });
+};
+
+// --- Program Endpoints ---
+
+export const getV1ProgramsEndpoint = Endpoint.build("/api/v1/programs");
+export const getV1ProgramsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1ProgramsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-programs", async (auth) => {
+    return resultToResponse(await ApiV1_listPrograms(auth.userId, auth.user, di));
+  });
+};
+
+export const getV1ProgramEndpoint = Endpoint.build("/api/v1/programs/:id");
+export const getV1ProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getV1ProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-program", async (auth) => {
+    return resultToResponse(await ApiV1_getProgram(auth.userId, auth.user, params.id, di));
+  });
+};
+
+export const postV1ProgramEndpoint = Endpoint.build("/api/v1/programs");
+export const postV1ProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1ProgramEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-create-program", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.text) {
+      return apiError(400, "invalid_input", "Missing 'text' field");
+    }
+    return resultToResponse(
+      await ApiV1_createProgram(
+        auth.userId,
+        auth.user,
+        (body.name as string) || "New Program",
+        body.text as string,
+        auth.deviceId,
+        di
+      ),
+      201
+    );
+  });
+};
+
+export const putV1ProgramEndpoint = Endpoint.build("/api/v1/programs/:id");
+export const putV1ProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof putV1ProgramEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-program", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.text) {
+      return apiError(400, "invalid_input", "Missing 'text' field");
+    }
+    return resultToResponse(
+      await ApiV1_updateProgram(
+        auth.userId,
+        auth.user,
+        params.id,
+        body.text as string,
+        body.name as string | undefined,
+        auth.deviceId,
+        di
+      )
+    );
+  });
+};
+
+export const deleteV1ProgramEndpoint = Endpoint.build("/api/v1/programs/:id");
+export const deleteV1ProgramHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1ProgramEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-program", async (auth) => {
+    return resultToResponse(await ApiV1_deleteProgram(auth.userId, auth.user, params.id, auth.deviceId, di));
+  });
+};
+
+// --- Playground Endpoint ---
+
+export const postV1PlaygroundEndpoint = Endpoint.build("/api/v1/playground");
+export const postV1PlaygroundHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1PlaygroundEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-playground", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.programText) {
+      return apiError(400, "invalid_input", "Missing 'programText' field");
+    }
+    return resultToResponse(
+      ApiV1_playground(auth.user, {
+        programText: body.programText as string,
+        day: body.day as number | undefined,
+        week: body.week as number | undefined,
+        commands: body.commands as string[] | undefined,
+      })
+    );
+  });
+};
+
+// --- Program Stats Endpoint ---
+
+export const postV1ProgramStatsEndpoint = Endpoint.build("/api/v1/program-stats");
+export const postV1ProgramStatsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1ProgramStatsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-program-stats", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.programText) {
+      return apiError(400, "invalid_input", "Missing 'programText' field");
+    }
+    return resultToResponse(ApiV1_programStats(auth.user, body.programText as string));
+  });
+};
+
+// --- Dashboard Endpoints ---
+
+const strictBooleans = { acceptsBooleanStrings: false };
+
+export const getV1DashboardsEndpoint = Endpoint.build("/api/v1/dashboards");
+export const getV1DashboardsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1DashboardsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-dashboards", async (auth) => {
+    return resultToResponse(await ApiV1_listDashboards(auth.user, auth.deviceId, di));
+  });
+};
+
+export const getV1DashboardEndpoint = Endpoint.build("/api/v1/dashboards/:id");
+export const getV1DashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1DashboardEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-dashboard", async (auth) => {
+    return resultToResponse(await ApiV1_getDashboard(auth.user, auth.deviceId, params.id, di));
+  });
+};
+
+export const postV1DashboardEndpoint = Endpoint.build("/api/v1/dashboards");
+export const postV1DashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1DashboardEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-create-dashboard", async (auth) => {
+    const input = DashboardApi_parseCreate(getBodyJson(event), strictBooleans);
+    if (!input.success) {
+      return apiError(400, "invalid_input", input.error);
+    }
+    return resultToResponse(await ApiV1_createDashboard(auth.user, auth.deviceId, input.data, di), 201);
+  });
+};
+
+export const putV1DashboardEndpoint = Endpoint.build("/api/v1/dashboards/:id");
+export const putV1DashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putV1DashboardEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-dashboard", async (auth) => {
+    const input = DashboardApi_parseUpdate(getBodyJson(event), strictBooleans);
+    if (!input.success) {
+      return apiError(400, "invalid_input", input.error);
+    }
+    return resultToResponse(await ApiV1_updateDashboard(auth.user, auth.deviceId, params.id, input.data, di));
+  });
+};
+
+export const deleteV1DashboardEndpoint = Endpoint.build("/api/v1/dashboards/:id");
+export const deleteV1DashboardHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1DashboardEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-dashboard", async (auth) => {
+    return resultToResponse(await ApiV1_deleteDashboard(auth.user, auth.deviceId, params.id, di));
+  });
+};
+
+export const postV1DashboardPreviewEndpoint = Endpoint.build("/api/v1/dashboard-preview");
+export const postV1DashboardPreviewHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1DashboardPreviewEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-dashboard-preview", async (auth) => {
+    const input = DashboardApi_parsePreview(getBodyJson(event));
+    if (!input.success) {
+      return apiError(400, "invalid_input", input.error);
+    }
+    return resultToResponse(await ApiV1_previewDashboard(auth.user, auth.deviceId, input.data.text, di));
+  });
+};
+
+// --- Gym Endpoints ---
+
+export const getV1GymsEndpoint = Endpoint.build("/api/v1/gyms");
+export const getV1GymsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getV1GymsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-gyms", async (auth) => {
+    return resultToResponse(ApiV1_listGyms(auth.user));
+  });
+};
+
+export const postV1GymEndpoint = Endpoint.build("/api/v1/gyms");
+export const postV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postV1GymEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-create-gym", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.name) {
+      return apiError(400, "invalid_input", "Missing 'name' field");
+    }
+    return resultToResponse(await ApiV1_createGym(auth.userId, auth.user, body.name as string, auth.deviceId, di), 201);
+  });
+};
+
+export const putV1GymEndpoint = Endpoint.build("/api/v1/gyms/:id");
+export const putV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof putV1GymEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-gym", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(await ApiV1_updateGym(auth.userId, auth.user, params.id, body, auth.deviceId, di));
+  });
+};
+
+export const deleteV1GymEndpoint = Endpoint.build("/api/v1/gyms/:id");
+export const deleteV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof deleteV1GymEndpoint> = async ({
+  payload,
+  match: { params },
+}) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-gym", async (auth) => {
+    return resultToResponse(await ApiV1_deleteGym(auth.userId, auth.user, params.id, auth.deviceId, di));
+  });
+};
+
+// --- Equipment Endpoints ---
+
+export const getV1EquipmentListEndpoint = Endpoint.build("/api/v1/gyms/:gymId/equipment");
+export const getV1EquipmentListHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1EquipmentListEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-equipment", async (auth) => {
+    return resultToResponse(ApiV1_listEquipment(auth.user, params.gymId));
+  });
+};
+
+export const getV1EquipmentEndpoint = Endpoint.build("/api/v1/gyms/:gymId/equipment/:id");
+export const getV1EquipmentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1EquipmentEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-equipment", async (auth) => {
+    return resultToResponse(ApiV1_getEquipment(auth.user, params.gymId, params.id));
+  });
+};
+
+export const postV1EquipmentEndpoint = Endpoint.build("/api/v1/gyms/:gymId/equipment");
+export const postV1EquipmentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1EquipmentEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-create-equipment", async (auth) => {
+    const body = getBodyJson(event);
+    if (!body.name) {
+      return apiError(400, "invalid_input", "Missing 'name' field");
+    }
+    return resultToResponse(
+      await ApiV1_createCustomEquipment(
+        auth.userId,
+        auth.user,
+        params.gymId,
+        body.name as string,
+        body,
+        auth.deviceId,
+        di
+      ),
+      201
+    );
+  });
+};
+
+export const putV1EquipmentEndpoint = Endpoint.build("/api/v1/gyms/:gymId/equipment/:id");
+export const putV1EquipmentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putV1EquipmentEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-equipment", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(
+      await ApiV1_updateEquipment(auth.userId, auth.user, params.gymId, params.id, body, auth.deviceId, di)
+    );
+  });
+};
+
+// --- Exercise Data Endpoints ---
+
+export const getV1ExerciseDataListEndpoint = Endpoint.build("/api/v1/exercise-data");
+export const getV1ExerciseDataListHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1ExerciseDataListEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-exercise-data", async (auth) => {
+    return resultToResponse(ApiV1_listExerciseData(auth.user));
+  });
+};
+
+export const getV1ExerciseDataEndpoint = Endpoint.build("/api/v1/exercise-data/:key");
+export const getV1ExerciseDataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1ExerciseDataEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-exercise-data", async (auth) => {
+    return resultToResponse(ApiV1_getExerciseData(auth.user, params.key));
+  });
+};
+
+export const putV1ExerciseDataEndpoint = Endpoint.build("/api/v1/exercise-data/:key");
+export const putV1ExerciseDataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putV1ExerciseDataEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-set-exercise-data", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(await ApiV1_setExerciseData(auth.userId, auth.user, params.key, body, auth.deviceId, di));
+  });
+};
+
+export const deleteV1ExerciseDataEndpoint = Endpoint.build("/api/v1/exercise-data/:key");
+export const deleteV1ExerciseDataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1ExerciseDataEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-exercise-data", async (auth) => {
+    return resultToResponse(await ApiV1_deleteExerciseData(auth.userId, auth.user, params.key, auth.deviceId, di));
+  });
+};
+
+// --- Measurements Endpoints ---
+
+export const getV1MeasurementsListEndpoint = Endpoint.build("/api/v1/measurements");
+export const getV1MeasurementsListHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1MeasurementsListEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-list-measurements", async (auth) => {
+    return resultToResponse(await ApiV1_listMeasurements(auth.userId, auth.user, di));
+  });
+};
+
+export const getV1MeasurementEndpoint = Endpoint.build("/api/v1/measurements/:key", {
+  limit: "string?",
+  cursor: "string?",
+});
+export const getV1MeasurementHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1MeasurementEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-measurement", async (auth) => {
+    return resultToResponse(
+      await ApiV1_getMeasurement(
+        auth.userId,
+        auth.user,
+        params.key,
+        { limit: params.limit, cursor: params.cursor },
+        auth.deviceId,
+        di
+      )
+    );
+  });
+};
+
+export const postV1MeasurementEndpoint = Endpoint.build("/api/v1/measurements/:key");
+export const postV1MeasurementHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1MeasurementEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-add-measurement", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(
+      await ApiV1_addMeasurement(
+        auth.userId,
+        auth.user,
+        params.key,
+        { value: body.value, timestamp: body.timestamp },
+        auth.deviceId,
+        di
+      ),
+      201
+    );
+  });
+};
+
+export const putV1MeasurementEndpoint = Endpoint.build("/api/v1/measurements/:key/:timestamp");
+export const putV1MeasurementHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof putV1MeasurementEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-update-measurement", async (auth) => {
+    const body = getBodyJson(event);
+    return resultToResponse(
+      await ApiV1_updateMeasurement(
+        auth.userId,
+        auth.user,
+        params.key,
+        params.timestamp,
+        { value: body.value },
+        auth.deviceId,
+        di
+      )
+    );
+  });
+};
+
+export const deleteV1MeasurementEndpoint = Endpoint.build("/api/v1/measurements/:key/:timestamp");
+export const deleteV1MeasurementHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1MeasurementEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-delete-measurement", async (auth) => {
+    return resultToResponse(
+      await ApiV1_deleteMeasurement(auth.userId, auth.user, params.key, params.timestamp, auth.deviceId, di)
+    );
+  });
+};
+
+export const getV1WorkoutNextEndpoint = Endpoint.build("/api/v1/workout/next", {
+  programId: "string?",
+  week: "string?",
+  dayInWeek: "string?",
+});
+export const getV1WorkoutNextHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1WorkoutNextEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-workout-next", async (auth) => {
+    return resultToResponse(await ApiV1_getNextWorkout(auth.userId, auth.user, params, di));
+  });
+};
+
+export const postV1WorkoutStartEndpoint = Endpoint.build("/api/v1/workout/start");
+export const postV1WorkoutStartHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutStartEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-start-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_startWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const getV1WorkoutCurrentEndpoint = Endpoint.build("/api/v1/workout/current");
+export const getV1WorkoutCurrentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1WorkoutCurrentEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-workout-current", async (auth) => {
+    return resultToResponse(await ApiV1_getCurrentWorkout(auth.userId, auth.user, di));
+  });
+};
+
+export const deleteV1WorkoutCurrentEndpoint = Endpoint.build("/api/v1/workout/current");
+export const deleteV1WorkoutCurrentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1WorkoutCurrentEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-discard-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_discardWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+// A single-set write is a batch of one, so both endpoints share a code path.
+export const postV1WorkoutSetEndpoint = Endpoint.build("/api/v1/workout/set");
+export const postV1WorkoutSetHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutSetEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-write-workout-set", async (auth) => {
+    return resultToResponse(
+      await ApiV1_writeSets(auth.userId, auth.user, { sets: [getBodyJson(event)] }, getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const postV1WorkoutSetsEndpoint = Endpoint.build("/api/v1/workout/sets");
+export const postV1WorkoutSetsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutSetsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-write-workout-sets", async (auth) => {
+    return resultToResponse(
+      await ApiV1_writeSets(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const postV1WorkoutFinishEndpoint = Endpoint.build("/api/v1/workout/finish");
+export const postV1WorkoutFinishHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutFinishEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-finish-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_finishWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const getV1SettingsEndpoint = Endpoint.build("/api/v1/settings");
+export const getV1SettingsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1SettingsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-settings", async (auth) => {
+    return resultToResponse(ApiV1_getWorkoutSettings(auth.user));
+  });
+};

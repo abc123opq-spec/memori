@@ -1,0 +1,46 @@
+import type { JSX } from "react";
+import { View } from "react-native";
+import { BodyMapSvg } from "../../../components/muscles/images/bodyMapSvg";
+import { IMuscleGroupSetSplit } from "../models/types";
+import { ISettings } from "../../../types";
+import { MuscleMapRegions_styles } from "../../../models/muscleMapRegions";
+import { IMusclePoints } from "../../../models/ungroupedMuscles";
+import { MuscleRangeDisplay_weekIntensities } from "../../../models/muscleRangeDisplay";
+import { Tailwind_semantic } from "../../../utils/tailwindConfig";
+
+interface IPlannerMusclesProps {
+  settings: ISettings;
+  data: Partial<IMuscleGroupSetSplit>;
+  ungroupedMuscleSets: IMusclePoints;
+}
+
+export function PlannerWeekMuscles(props: IPlannerMusclesProps): JSX.Element {
+  const intensities = MuscleRangeDisplay_weekIntensities(props.data, props.ungroupedMuscleSets, props.settings.planner);
+  const muscleData = MuscleMapRegions_styles(
+    intensities.groups,
+    intensities.ungroupedMuscles,
+    props.settings,
+    Tailwind_semantic().text.primary
+  );
+
+  return (
+    <View className="flex-row">
+      <View className="relative flex-1">
+        <BodyMapSvg
+          side="back"
+          regions={muscleData.back}
+          baseFill={Tailwind_semantic().text.primary}
+          baseOpacity={0.15}
+        />
+      </View>
+      <View className="relative flex-1">
+        <BodyMapSvg
+          side="front"
+          regions={muscleData.front}
+          baseFill={Tailwind_semantic().text.primary}
+          baseOpacity={0.15}
+        />
+      </View>
+    </View>
+  );
+}

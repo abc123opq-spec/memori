@@ -1,0 +1,346 @@
+import { Language_current } from "../i18n/language";
+function displayLocale(): string | undefined {
+  return Language_current() === "ja" ? "ja-JP" : undefined;
+}
+
+export function DateUtils_weekdayInitials(startWeekFromMonday?: boolean): string[] {
+  const sunday = new Date(2024, 0, 7);
+  const names = [0, 1, 2, 3, 4, 5, 6].map((offset) =>
+    new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + offset).toLocaleDateString(
+      displayLocale() ?? "en-US",
+      {
+        weekday: "narrow",
+      }
+    )
+  );
+  return startWeekFromMonday ? [...names.slice(1), names[0]] : names;
+}
+
+export function DateUtils_format(dateStr: string | Date | number, hideWeekday?: boolean, hideYear?: boolean): string {
+  let date;
+  if (typeof dateStr === "string") {
+    date = new Date(Date.parse(dateStr));
+  } else if (typeof dateStr === "number") {
+    date = new Date(dateStr);
+  } else {
+    date = dateStr;
+  }
+  return date.toLocaleDateString(displayLocale(), {
+    weekday: !hideWeekday ? "short" : undefined,
+    year: !hideYear ? "numeric" : undefined,
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export function DateUtils_formatDayMonth(timestamp: number, now: number = Date.now()): string {
+  const isThisYear = new Date(timestamp).getFullYear() === new Date(now).getFullYear();
+  return DateUtils_format(timestamp, true, isThisYear);
+}
+
+export function DateUtils_formatWithTime(dateStr: string | Date | number): string {
+  let date;
+  if (typeof dateStr === "string") {
+    date = new Date(Date.parse(dateStr));
+  } else if (typeof dateStr === "number") {
+    date = new Date(dateStr);
+  } else {
+    date = dateStr;
+  }
+  return date.toLocaleDateString(displayLocale(), {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+  });
+}
+
+export function DateUtils_formatYYYYMMDD(date: Date | string | number, separator: string = "-"): string {
+  const d = new Date(date);
+  let month = `${d.getMonth() + 1}`;
+  let day = `${d.getDate()}`;
+  const year = `${d.getFullYear()}`;
+
+  if (month.length < 2) {
+    month = `0${month}`;
+  }
+  if (day.length < 2) {
+    day = `0${day}`;
+  }
+
+  return [year, month, day].join(separator);
+}
+
+export function DateUtils_formatUTCYYYYMMDD(date: Date | string | number): string {
+  const d = new Date(date);
+  let month = `${d.getUTCMonth() + 1}`;
+  let day = `${d.getUTCDate()}`;
+  const year = `${d.getUTCFullYear()}`;
+
+  if (month.length < 2) {
+    month = `0${month}`;
+  }
+  if (day.length < 2) {
+    day = `0${day}`;
+  }
+
+  return [year, month, day].join("-");
+}
+
+export function DateUtils_formatUTCYYYYMMDDHHMM(date: Date | string | number): string {
+  const d = new Date(date);
+  let minutes = `${d.getUTCMinutes()}`;
+  let hours = `${d.getUTCHours()}`;
+  let day = `${d.getUTCDate()}`;
+  let month = `${d.getUTCMonth() + 1}`;
+  const year = `${d.getUTCFullYear()}`;
+
+  if (minutes.length < 2) {
+    minutes = `0${minutes}`;
+  }
+  if (hours.length < 2) {
+    hours = `0${hours}`;
+  }
+  if (month.length < 2) {
+    month = `0${month}`;
+  }
+  if (day.length < 2) {
+    day = `0${day}`;
+  }
+
+  return `${[year, month, day].join("-")} ${hours}:${minutes}`;
+}
+
+export function DateUtils_parseYYYYMMDDHHMM(dateStr: string): Date | undefined {
+  const match = dateStr.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+  if (match != null) {
+    const [, year, month, day, hours, minutes, seconds] = match;
+    return new Date(
+      new Date(
+        parseInt(year, 10),
+        parseInt(month, 10) - 1,
+        parseInt(day, 10),
+        parseInt(hours, 10),
+        parseInt(minutes, 10),
+        parseInt(seconds, 10)
+      )
+    );
+  }
+  return undefined;
+}
+
+const monthNames = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+];
+
+function monthIndexFromName(word: string): number | undefined {
+  if (word.length < 3) {
+    return undefined;
+  }
+  const index = monthNames.findIndex((name) => name.startsWith(word));
+  return index === -1 ? undefined : index;
+}
+
+// Hermes only parses ISO 8601 strings, so locale formats like "Oct 17, 2026, 8:30 AM" need this
+export function DateUtils_parseNamedMonthDateTime(dateStr: string): number | undefined {
+  const tokens = dateStr.toLowerCase().match(/\d+:\d+(?::\d+)?|[a-z]+|\d+/g) ?? [];
+  let year: number | undefined;
+  let month: number | undefined;
+  let day: number | undefined;
+  let time: number[] | undefined;
+  let meridiem: string | undefined;
+  for (const token of tokens) {
+    if (token.includes(":")) {
+      if (time != null) {
+        return undefined;
+      }
+      time = token.split(":").map(Number);
+    } else if (token === "am" || token === "pm") {
+      if (meridiem != null) {
+        return undefined;
+      }
+      meridiem = token;
+    } else if (/^[a-z]/.test(token)) {
+      if (month != null) {
+        return undefined;
+      }
+      month = monthIndexFromName(token);
+      if (month == null) {
+        return undefined;
+      }
+    } else if (token.length === 4 && year == null) {
+      year = Number(token);
+    } else if (token.length <= 2 && day == null) {
+      day = Number(token);
+    } else {
+      return undefined;
+    }
+  }
+  if (year == null || month == null || day == null || time == null) {
+    return undefined;
+  }
+  const [rawHour, minute, second = 0] = time;
+  if (meridiem != null ? rawHour < 1 || rawHour > 12 : rawHour > 23) {
+    return undefined;
+  }
+  const hour = meridiem != null ? (rawHour % 12) + (meridiem === "pm" ? 12 : 0) : rawHour;
+  if (minute > 59 || second > 59) {
+    return undefined;
+  }
+  const date = new Date(year, month, day, hour, minute, second);
+  return date.getDate() === day ? date.getTime() : undefined;
+}
+
+export function DateUtils_formatYYYYMMDDHHMM(date: Date | string | number, separator: string = ""): string {
+  const d = new Date(date);
+  let seconds = `${d.getSeconds()}`;
+  let minutes = `${d.getMinutes()}`;
+  let hours = `${d.getHours()}`;
+  let day = `${d.getDate()}`;
+  let month = `${d.getMonth() + 1}`;
+  const year = `${d.getFullYear()}`;
+
+  if (seconds.length < 2) {
+    seconds = `0${seconds}`;
+  }
+  if (minutes.length < 2) {
+    minutes = `0${minutes}`;
+  }
+  if (hours.length < 2) {
+    hours = `0${hours}`;
+  }
+  if (month.length < 2) {
+    month = `0${month}`;
+  }
+  if (day.length < 2) {
+    day = `0${day}`;
+  }
+
+  return [year, month, day, hours, minutes, seconds].join(separator);
+}
+
+export function DateUtils_firstDayOfWeekTimestamp(date: Date | number, startWeekFromMonday?: boolean): number {
+  const d = new Date(date);
+  let weekDay = d.getDay();
+  if (startWeekFromMonday && weekDay === 0) {
+    weekDay = 7;
+  }
+  const currentDay = d.getDate();
+  const beginningOfWeekDay = currentDay - weekDay + (startWeekFromMonday ? 1 : 0);
+  const newDate = new Date(d.getFullYear(), d.getMonth(), beginningOfWeekDay);
+  return newDate.getTime();
+}
+
+export function DateUtils_lastDayOfWeekTimestamp(date: Date | number, startWeekFromMonday?: boolean): number {
+  const d = new Date(date);
+  let weekDay = d.getDay();
+  if (startWeekFromMonday && weekDay === 0) {
+    weekDay = 7;
+  }
+  const currentDay = d.getDate();
+  const endOfWeekDay = currentDay + (7 - weekDay) + (startWeekFromMonday ? 1 : 0);
+  const newDate = new Date(d.getFullYear(), d.getMonth(), endOfWeekDay, 23, 59, 59);
+  return newDate.getTime();
+}
+
+export function DateUtils_formatHHMMSS(date: Date | string | number, withMs: boolean = false): string {
+  const d = new Date(date);
+  let seconds = `${d.getSeconds()}`;
+  let minutes = `${d.getMinutes()}`;
+  let hours = `${d.getHours()}`;
+
+  if (seconds.length < 2) {
+    seconds = `0${seconds}`;
+  }
+  if (minutes.length < 2) {
+    minutes = `0${minutes}`;
+  }
+  if (hours.length < 2) {
+    hours = `0${hours}`;
+  }
+  let result = [hours, minutes, seconds].join(":");
+  if (withMs) {
+    result += `.${d.getMilliseconds()}`;
+  }
+  return result;
+}
+
+export function DateUtils_fromYYYYMMDD(dateStr: string, separator: string = "-"): Date {
+  const regexp = new RegExp(`^(\\d{4})${separator}(\\d{2})${separator}(\\d{2})$`);
+  const regexpMatchArray = dateStr.match(regexp);
+  if (regexpMatchArray) {
+    const [, year, month, day] = regexpMatchArray;
+    const date = new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+    return date;
+  } else {
+    return new Date(Date.UTC(1970, 1, 1));
+  }
+}
+
+export function DateUtils_fromYYYYMMDDStr(dateStr: string, separator: string = "-"): string {
+  return DateUtils_fromYYYYMMDD(dateStr, separator).toISOString();
+}
+
+export function DateUtils_yearAndMonth(date: Date | string | number): [number, number] {
+  const d = new Date(date);
+  return [d.getUTCFullYear(), d.getUTCMonth()];
+}
+
+export function DateUtils_startOfUTCMonth(date: Date | string | number): number {
+  const d = new Date(date);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+export function DateUtils_addUTCMonths(timestamp: number, months: number): number {
+  const d = new Date(timestamp);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1);
+}
+
+export function DateUtils_dayOfWeekStr(date: string): string {
+  const d = new Date(DateUtils_fromYYYYMMDDStr(date));
+  return d.toLocaleDateString(displayLocale(), { weekday: "long" });
+}
+
+function formatRangeJa(startDate: Date, endDate: Date): string {
+  const full = (d: Date): string => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  if (startDate.getFullYear() !== endDate.getFullYear()) {
+    return `${full(startDate)}〜${full(endDate)}`;
+  }
+  if (startDate.getMonth() !== endDate.getMonth()) {
+    return `${full(startDate)}〜${endDate.getMonth() + 1}月${endDate.getDate()}日`;
+  }
+  return `${full(startDate)}〜${endDate.getDate()}日`;
+}
+
+export function DateUtils_formatRange(start: Date | string | number, end: Date | string | number): string {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  if (Language_current() === "ja") {
+    return formatRangeJa(startDate, endDate);
+  }
+  if (startDate.getFullYear() !== endDate.getFullYear()) {
+    return `${DateUtils_format(startDate, true)} - ${DateUtils_format(endDate, true)}`;
+  } else {
+    if (startDate.getMonth() !== endDate.getMonth()) {
+      const formattedStart = startDate.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      const formattedEnd = endDate.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      return `${formattedStart} - ${formattedEnd}, ${startDate.getFullYear()}`;
+    } else {
+      const month = startDate.toLocaleDateString(undefined, { month: "short" });
+      return `${month} ${startDate.getDate()}-${endDate.getDate()}, ${startDate.getFullYear()}`;
+    }
+  }
+}

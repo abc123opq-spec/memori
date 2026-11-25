@@ -1,0 +1,7 @@
+{
+  "app": "TS_NODE_TRANSPILE_ONLY=1 npx ts-node --prefer-ts-exts liftosaur-cdk/liftosaur-cdk.ts",
+  "context": {
+    "@aws-cdk/core:stackRelativeExports": "true",
+    "@aws-cdk/aws-ecs-patterns:removeDefaultDesiredCount": true
+  }
+}

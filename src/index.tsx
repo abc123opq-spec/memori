@@ -1,0 +1,107 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { createRoot } from "react-dom/client";
+import RB from "rollbar";
+import { RollbarUtils_config } from "./utils/rollbar";
+
+declare let Rollbar: RB;
+declare let __ENV__: string;
+Rollbar.configure(RollbarUtils_config());
+
+import { AppView } from "./components/app";
+import { AudioInterface } from "./lib/audioInterface";
+import { TimerBridge } from "./utils/nativeTimerBridge";
+import { getInitialState, getIdbKey } from "./ducks/reducer";
+import { DateUtils_formatYYYYMMDDHHMM } from "./utils/date";
+import { IndexedDBUtils_initializeForSafari, IndexedDBUtils_getAllKeys } from "./utils/indexeddb";
+import { Persistence } from "./utils/persistence";
+import { ILocalStorage } from "./models/state";
+import { Service } from "./api/service";
+import { UrlUtils_build } from "./utils/url";
+import { AsyncQueue } from "./utils/asyncQueue";
+import { DeviceId_get } from "./utils/deviceId";
+import { Language_applyToDocument } from "./i18n/language";
+
+Language_applyToDocument();
+IndexedDBUtils_initializeForSafari();
+
+if ("serviceWorker" in navigator && (typeof window === "undefined" || window.location.protocol.startsWith("http"))) {
+  navigator.serviceWorker.register("./webpushr-sw.js");
+}
+navigator.storage?.persist?.().catch(() => undefined);
+
+console.log(DateUtils_formatYYYYMMDDHHMM(Date.now()));
+const client = window.fetch.bind(window);
+const timer = new TimerBridge();
+const audio = new AudioInterface(timer);
+const persistence = new Persistence();
+const url = UrlUtils_build(document.location.href);
+const userId = url.searchParams.get("userid") || undefined;
+const adminKey = url.searchParams.get("admin");
+
+async function initialize(loadedData: ILocalStorage | undefined): Promise<void> {
+  try {
+    (window as any).loadedData = loadedData;
+    const deviceId = await DeviceId_get();
+    const initialState = await getInitialState(client, { url, localStorage: loadedData, deviceId });
+    if (adminKey) {
+      initialState.adminKey = adminKey;
+    }
+    const uid = initialState.user?.id || initialState.storage.tempUserId;
+    Rollbar.configure(RollbarUtils_config({ person: { id: uid } }));
+    (window as any).state = initialState;
+    (window as any).service = new Service(window.fetch.bind(window));
+    const queue = new AsyncQueue();
+    (window as any).queue = queue;
+    createRoot(document.getElementById("app")!).render(
+      <AppView
+        initialState={initialState}
+        client={client}
+        audio={audio}
+        queue={queue}
+        persistence={persistence}
+        timer={timer}
+      />
+    );
+  } catch (e) {
+    console.error(e);
+    Rollbar.error("Failed to initialize app", e instanceof Error ? e : new Error(String(e)));
+  }
+}
+
+IndexedDBUtils_getAllKeys();
+
+async function main(): Promise<void> {
+  persistence
+    .load(await getIdbKey(userId, !!adminKey))
+    .then(initialize)
+    .catch((e) => {
+      console.error(e);
+      initialize(undefined);
+    });
+}
+
+main();
+
+setTimeout(() => {
+  const appEl = document.getElementById("app");
+  if (appEl && appEl.childElementCount === 0) {
+    Rollbar.error("White screen detected - app failed to render after 10s");
+  }
+}, 10000);
+
+(window as any).storeData = async (data: any) => {
+  try {
+    const localStorage: ILocalStorage = typeof data === "string" ? JSON.parse(data) : data;
+    await persistence.saveFull(await getIdbKey(userId, !!adminKey), localStorage);
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+(window as any).clearData = async (data: any) => {
+  try {
+    await persistence.delete(await getIdbKey(userId, !!adminKey));
+  } catch (e) {
+    console.error(e);
+  }
+};

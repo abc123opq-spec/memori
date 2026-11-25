@@ -1,0 +1,128 @@
+import { Children, JSX, ReactNode, useCallback, useContext, useEffect, useState } from "react";
+import { Animated, View, LayoutChangeEvent, Platform } from "react-native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
+import { BottomTabBarHeightContext } from "@react-navigation/bottom-tabs";
+import { useReportSheetHeight } from "./ActiveSheetHeightContext";
+import { useCustomKeyboardAnimatedHeight } from "./CustomKeyboardContext";
+import { NavScreenScrollContext } from "./NavScreenScrollContext";
+import { useNavScreenScroll } from "./useNavScreenScroll";
+import { usePerfScrollMarkers } from "../utils/usePerfScrollMarkers";
+import { SystemKeyboardSpacer } from "../components/systemKeyboardSpacer";
+
+export { NavScreenScrollContext } from "./NavScreenScrollContext";
+export type { INavScreenScrollListener, INavScreenScrollContextValue } from "./NavScreenScrollContext";
+
+export function NavScreenContent(props: {
+  children: ReactNode;
+  stickyHeaderIndices?: number[];
+  footer?: ReactNode;
+  // Opt-in per screen rather than global: on-drag dismisses on any scroll, which is wrong
+  // for form-ish screens but right where the keyboard covers what you're reading.
+  keyboardDismissMode?: "none" | "on-drag" | "interactive";
+  // Android only (iOS gets it from automaticallyAdjustKeyboardInsets). Opt-in because it
+  // lengthens the scroll content on every screen that turns it on, keyboard up or not.
+  // "reveal" also scrolls the focused TextInput above the keyboard. The program editor keeps
+  // `true` because it reveals its native editor's caret itself.
+  avoidSystemKeyboard?: boolean | "reveal";
+}): JSX.Element {
+  const navigation = useNavigation();
+  const isFocused = useIsFocused();
+  const tabBarHeight = useContext(BottomTabBarHeightContext) ?? 0;
+  const animatedKeyboardHeight = useCustomKeyboardAnimatedHeight();
+  const [footerHeight, setFooterHeight] = useState(0);
+  const [stickyHeaderHeight, setStickyHeaderHeight] = useState(0);
+  const onScrolledChange = useCallback(
+    (isScrolled: boolean) => navigation.setOptions({ navIsScrolled: isScrolled }),
+    [navigation]
+  );
+  const {
+    contextValue,
+    scrollRef,
+    viewportRef,
+    onScroll: onAnimatedScroll,
+    onLayout: onScrollViewLayout,
+    onContentSizeChange,
+  } = useNavScreenScroll({ footerHeight, stickyHeaderHeight, onScrolledChange });
+
+  const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
+    setFooterHeight(e.nativeEvent.layout.height);
+  }, []);
+
+  const onStickyHeaderLayout = useCallback((e: LayoutChangeEvent) => {
+    setStickyHeaderHeight(e.nativeEvent.layout.height);
+  }, []);
+
+  // Only the last sticky header is measured: RN pushes each pinned one out with the next, so
+  // by the time the content below is on screen that one alone covers the top of the scroll
+  // area. The wrapper is what gives it a host view to measure — the child may be a Profiler.
+  const stickyIndices = props.stickyHeaderIndices;
+  const lastStickyIndex =
+    stickyIndices != null && stickyIndices.length > 0 ? stickyIndices[stickyIndices.length - 1] : undefined;
+  const children =
+    lastStickyIndex == null
+      ? props.children
+      : Children.map(props.children, (child, index) =>
+          index === lastStickyIndex ? <View onLayout={onStickyHeaderLayout}>{child}</View> : child
+        );
+
+  const scrollMarkers = usePerfScrollMarkers("NavScreenContent");
+
+  const scrollView = (
+    <Animated.ScrollView
+      ref={scrollRef}
+      data-testid="screen"
+      testID="screen"
+      className="flex-1 bg-background-default"
+      contentContainerStyle={{ flexGrow: 1, paddingBottom: props.footer != null ? footerHeight : 0 }}
+      automaticallyAdjustKeyboardInsets={true}
+      keyboardDismissMode={props.keyboardDismissMode}
+      onScroll={onAnimatedScroll}
+      onLayout={onScrollViewLayout}
+      onContentSizeChange={onContentSizeChange}
+      scrollEventThrottle={16}
+      onScrollBeginDrag={scrollMarkers.onScrollBeginDrag}
+      onScrollEndDrag={scrollMarkers.onScrollEndDrag}
+      onMomentumScrollEnd={scrollMarkers.onMomentumScrollEnd}
+      stickyHeaderIndices={props.stickyHeaderIndices}
+      removeClippedSubviews={false}
+      style={
+        Platform.OS === "web"
+          ? ({ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" } as object)
+          : undefined
+      }
+    >
+      {children}
+      <Animated.View style={{ height: animatedKeyboardHeight }} />
+      {props.avoidSystemKeyboard && Platform.OS === "android" ? (
+        <SystemKeyboardSpacer scrollRef={props.avoidSystemKeyboard === "reveal" ? scrollRef : undefined} />
+      ) : null}
+    </Animated.ScrollView>
+  );
+
+  return (
+    <NavScreenScrollContext.Provider value={contextValue}>
+      {/* Spans exactly the scroll area, and stays even without a footer: measuring whether a child
+          is on screen needs this box, because on Android edge-to-edge the window and
+          measureInWindow don't share an origin. */}
+      <View ref={viewportRef} className="flex-1">
+        {scrollView}
+        {props.footer != null ? (
+          <View onLayout={onFooterLayout} className="absolute bottom-0 left-0 right-0" pointerEvents="box-none">
+            {props.footer}
+          </View>
+        ) : null}
+        {isFocused && props.footer != null && footerHeight > 0 ? (
+          <FooterHeightReport height={footerHeight + tabBarHeight} />
+        ) : null}
+      </View>
+    </NavScreenScrollContext.Provider>
+  );
+}
+
+function FooterHeightReport(props: { height: number }): null {
+  const reportHeight = useReportSheetHeight();
+  useEffect(() => {
+    reportHeight(props.height);
+  }, [props.height, reportHeight]);
+  return null;
+}

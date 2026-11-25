@@ -1,0 +1,335 @@
+/* eslint-disable @typescript-eslint/unified-signatures */
+import { LiftoscriptEvaluator, NodeName, LiftoscriptSyntaxError } from "./liftoscriptEvaluator";
+import { parser as LiftoscriptParser } from "./liftoscript";
+import {
+  IScriptFnContext,
+  Progress_createEmptyScriptBindings,
+  Progress_createScriptFunctions,
+} from "./models/progress";
+import { ILiftoscriptExecution, LiftoscriptEnvironment_of } from "./liftoscriptEnvironment";
+import { Weight_build } from "./models/weight";
+import { IUnit, IWeight, IProgramState, IPercentage, IDayData, IExerciseType, ISettings } from "./types";
+import type { Tree } from "@lezer/common";
+import RB from "rollbar";
+import { IProgramMode } from "./models/program";
+import { IAssignmentOp, ILiftoscriptEvaluatorUpdate, ILiftoscriptScalar } from "./liftoscriptEvaluator";
+import { Dialog_alert } from "./utils/dialog";
+import memoize from "micro-memoize";
+
+declare let Rollbar: RB;
+
+const lastAlertDisplayedTs: Partial<Record<string, number>> = {};
+
+const parseLiftoscript = memoize((script: string): Tree => LiftoscriptParser.parse(script), { maxSize: 200 });
+
+// The semantic pass reads only the script, the mode, the environment, and which state and binding keys exist,
+// never their values. A pass that throws is not cached, so every run of a broken script still reports its error.
+const validateLiftoscript = memoize(
+  (
+    _script: string,
+    _mode: IProgramMode,
+    _environmentId: string,
+    _stateKeys: string,
+    _bindingKeys: string,
+    validate: () => void
+  ): true => {
+    validate();
+    return true;
+  },
+  { maxSize: 500, transformKey: (args) => args.slice(0, 5) }
+);
+
+// The pass checks membership with `in`, which also sees inherited keys. A state variable named `__proto__`
+// gives the state a prototype, and then `Object.keys` no longer describes what `in` finds.
+function incAssignmentOp(value: string): IAssignmentOp | undefined {
+  return value === "+=" || value === "-=" || value === "*=" || value === "/=" ? value : undefined;
+}
+
+function hasOnlyOwnKeys(value: object): boolean {
+  return Object.getPrototypeOf(value) === Object.prototype;
+}
+
+const hasKeywordMemoized = memoize(
+  (script: string, name: string): boolean => {
+    const expr = parseLiftoscript(script);
+    const cursor = expr.cursor();
+    do {
+      if (cursor.node.type.name === NodeName.Keyword) {
+        if (LiftoscriptEvaluator.getValue(script, cursor.node) === name) {
+          return true;
+        }
+      }
+    } while (cursor.next());
+    return false;
+  },
+  { maxSize: 200 }
+);
+
+export class ScriptRunner {
+  private readonly script: string;
+  private readonly state: IProgramState;
+  private readonly otherStates: Record<number, IProgramState>;
+  private readonly execution: ILiftoscriptExecution;
+  private readonly units: IUnit;
+  private readonly context: IScriptFnContext;
+  private updates: ILiftoscriptEvaluatorUpdate[] = [];
+  private wroteWarmups = false;
+
+  constructor(
+    script: string,
+    state: IProgramState,
+    otherStates: Record<number, IProgramState>,
+    execution: ILiftoscriptExecution,
+    units: IUnit,
+    context: IScriptFnContext
+  ) {
+    this.script = script;
+    this.state = state;
+    this.otherStates = otherStates;
+    this.execution = execution;
+    this.units = units;
+    this.context = context;
+  }
+
+  private evaluator(): LiftoscriptEvaluator {
+    return new LiftoscriptEvaluator(
+      this.script,
+      this.state,
+      this.otherStates,
+      this.execution,
+      this.context,
+      this.units
+    );
+  }
+
+  public static isValid(
+    script: string,
+    state: IProgramState,
+    dayData: IDayData,
+    settings: ISettings,
+    exerciseType?: IExerciseType
+  ): LiftoscriptSyntaxError | undefined {
+    const liftoscriptEvaluator = new ScriptRunner(
+      script,
+      state,
+      {},
+      {
+        kind: "progress",
+        mode: "planner",
+        bindings: Progress_createEmptyScriptBindings(dayData, settings),
+        fns: Progress_createScriptFunctions(settings),
+      },
+      settings.units,
+      { exerciseType: exerciseType, unit: settings.units, prints: [] }
+    );
+    try {
+      liftoscriptEvaluator.parse();
+    } catch (e) {
+      if (e instanceof LiftoscriptSyntaxError) {
+        return e;
+      } else {
+        throw e;
+      }
+    }
+    return undefined;
+  }
+
+  public parse(): [LiftoscriptEvaluator, Tree] {
+    const liftoscriptTree = parseLiftoscript(this.script);
+    const liftoscriptEvaluator = this.evaluator();
+    const validate = (): void => liftoscriptEvaluator.parse(liftoscriptTree.topNode);
+    const bindings = this.execution.bindings;
+    if (hasOnlyOwnKeys(this.state) && hasOnlyOwnKeys(bindings)) {
+      validateLiftoscript(
+        this.script,
+        this.execution.kind === "progress" ? this.execution.mode : "planner",
+        LiftoscriptEnvironment_of(this.execution).id,
+        Object.keys(this.state).sort().join("\n"),
+        Object.keys(bindings).sort().join("\n"),
+        validate
+      );
+    } else {
+      validate();
+    }
+    return [liftoscriptEvaluator, liftoscriptTree];
+  }
+
+  public switchWeightsToUnit(toUnit: IUnit): string {
+    const liftoscriptTree = parseLiftoscript(this.script);
+    return this.evaluator().switchWeightsToUnit(liftoscriptTree.topNode, toUnit);
+  }
+
+  public getStateVariableKeys(): Set<string> {
+    const liftoscriptTree = parseLiftoscript(this.script);
+    return this.evaluator().getStateVariableKeys(liftoscriptTree.topNode);
+  }
+
+  public static hasStateVariable(script: string, name: string): boolean {
+    const expr = parseLiftoscript(script);
+    const cursor = expr.cursor();
+    do {
+      if (cursor.node.type.name === NodeName.StateVariable) {
+        const keywordNode = cursor.node.getChild(NodeName.Keyword);
+        if (keywordNode != null) {
+          const value = LiftoscriptEvaluator.getValue(script, keywordNode);
+          if (value === name) {
+            return true;
+          }
+        }
+      }
+    } while (cursor.next());
+    return false;
+  }
+
+  public static hasKeyword(script: string, name: string): boolean {
+    // A keyword node's value is a slice of the script, so a name absent from the text cannot match.
+    if (script.indexOf(name) === -1) {
+      return false;
+    }
+    return hasKeywordMemoized(script, name);
+  }
+
+  public static assignmentOps(script: string, variable: string): IAssignmentOp[] {
+    if (script.indexOf(variable) === -1) {
+      return [];
+    }
+    const ops: IAssignmentOp[] = [];
+    const cursor = parseLiftoscript(script).cursor();
+    do {
+      const node = cursor.node;
+      const isAssignment = node.type.name === NodeName.AssignmentExpression;
+      if (!isAssignment && node.type.name !== NodeName.IncAssignmentExpression) {
+        continue;
+      }
+      const target = node.firstChild;
+      const keyword = target?.type.name === NodeName.VariableExpression ? target.getChild(NodeName.Keyword) : null;
+      if (keyword == null || LiftoscriptEvaluator.getValue(script, keyword) !== variable) {
+        continue;
+      }
+      const opNode = node.getChild(NodeName.IncAssignment);
+      const op = isAssignment || opNode == null ? "=" : incAssignmentOp(LiftoscriptEvaluator.getValue(script, opNode));
+      if (op != null) {
+        ops.push(op);
+      }
+    } while (cursor.next());
+    return ops;
+  }
+
+  public static callsFunction(script: string, name: string): boolean {
+    if (script.indexOf(name) === -1) {
+      return false;
+    }
+    const cursor = parseLiftoscript(script).cursor();
+    do {
+      if (cursor.node.type.name === NodeName.BuiltinFunctionExpression) {
+        const keyword = cursor.node.getChild(NodeName.Keyword);
+        if (keyword != null && LiftoscriptEvaluator.getValue(script, keyword) === name) {
+          return true;
+        }
+      }
+    } while (cursor.next());
+    return false;
+  }
+
+  public static safe<T>(cb: () => T, errorMsg: (e: Error) => string, defaultValue: T, disabled?: boolean): T {
+    let value: T;
+    try {
+      value = cb();
+    } catch (e) {
+      if (!disabled && e instanceof LiftoscriptSyntaxError) {
+        const lastAlertTs = lastAlertDisplayedTs[e.message];
+        console.error(e);
+        if (lastAlertTs == null || lastAlertTs < Date.now() - 1000 * 60 * 1) {
+          Dialog_alert(errorMsg(e));
+          this.reportError("Error during Liftoscript execution", e);
+          lastAlertDisplayedTs[e.message] = Date.now();
+        }
+        value = defaultValue;
+      } else {
+        throw e;
+      }
+    }
+    return value;
+  }
+
+  public execute(type: "reps"): number;
+  public execute(type: "rpe"): number;
+  public execute(type: "weight"): IWeight | IPercentage;
+  public execute(type: "timer"): number;
+  public execute(type?: undefined): ILiftoscriptScalar;
+  public execute(type?: "reps" | "weight" | "timer" | "rpe"): ILiftoscriptScalar {
+    const [liftoscriptEvaluator, liftoscriptTree] = this.parse();
+    const rawResult = liftoscriptEvaluator.evaluate(liftoscriptTree.topNode);
+    let result = Array.isArray(rawResult) ? rawResult[0] : rawResult;
+    if (result == null) {
+      result = 0;
+    }
+    const output = this.convertResult(type, result);
+    this.updates = liftoscriptEvaluator.updates;
+    this.wroteWarmups = liftoscriptEvaluator.didWriteWarmups;
+
+    return output;
+  }
+
+  public getUpdates(): ILiftoscriptEvaluatorUpdate[] {
+    return this.updates;
+  }
+
+  public get didWriteWarmups(): boolean {
+    return this.wroteWarmups;
+  }
+
+  private convertResult(
+    type: "reps" | "weight" | "timer" | "rpe" | undefined,
+    result: ILiftoscriptScalar
+  ): ILiftoscriptScalar {
+    if (type === "reps" || type === "timer") {
+      if (typeof result !== "number") {
+        throw new LiftoscriptSyntaxError("Expected to get number as a result", 0, 0, 0, 0, {
+          type: "wrongResultType",
+          data: { expected: "number" },
+        });
+      } else if (result < 0) {
+        return 0;
+      } else {
+        return result;
+      }
+    } else if (type === "rpe") {
+      if (typeof result !== "number") {
+        throw new LiftoscriptSyntaxError("Expected to get number as a result", 0, 0, 0, 0, {
+          type: "wrongResultType",
+          data: { expected: "number" },
+        });
+      } else {
+        return Math.round(Math.min(10, Math.max(0, result)) / 0.5) * 0.5;
+      }
+    } else if (type === "weight") {
+      if (typeof result === "boolean" || typeof result === "string") {
+        throw new LiftoscriptSyntaxError("Expected to get number, percentage or weight as a result", 0, 0, 0, 0, {
+          type: "wrongResultType",
+          data: { expected: "numberOrPercentageOrWeight" },
+        });
+      } else if (typeof result === "number") {
+        return Weight_build(result, this.units);
+      } else {
+        if (result.value < 0) {
+          return Weight_build(0, this.units);
+        } else {
+          return result;
+        }
+      }
+    } else {
+      return result;
+    }
+  }
+
+  private static reportError(msg: string, error?: Error): void {
+    if (typeof Rollbar === "undefined") {
+      return;
+    }
+    const payload = {
+      error: error ? { message: error.message, name: error.name, stack: error.stack } : undefined,
+    };
+    Rollbar.error(msg, payload);
+  }
+}

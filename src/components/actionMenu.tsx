@@ -1,0 +1,135 @@
+import { JSX, useCallback, useState } from "react";
+import { View, Pressable, Platform, ActionSheetIOS, Modal as RNModal } from "react-native";
+import { Text } from "./primitives/text";
+import { Translate_text } from "../i18n/translate";
+import { DropdownMenu, DropdownMenuItem } from "./dropdownMenu";
+import { ActionMenuPopup, ActionMenuPopup_anchor, IActionMenuAnchor } from "./actionMenuPopup";
+
+export interface IActionMenuAction {
+  label: string;
+  onPress: () => void;
+  destructive?: boolean;
+  disabled?: boolean;
+  testID?: string;
+}
+
+export interface IActionMenuProps {
+  renderTrigger: (open: (event?: unknown) => void) => JSX.Element;
+  title?: string;
+  actions: IActionMenuAction[];
+  onOpenChange?: (isOpen: boolean) => void;
+}
+
+export function ActionMenu(props: IActionMenuProps): JSX.Element {
+  const [isOpen, setIsOpen] = useState(false);
+  const [anchor, setAnchor] = useState<IActionMenuAnchor | undefined>(undefined);
+  const { onOpenChange } = props;
+
+  const open = useCallback(
+    (event?: unknown) => {
+      if (Platform.OS === "ios") {
+        const actions = props.actions;
+        const labels = actions.map((a) => Translate_text(a.label)).concat(Translate_text("Cancel"));
+        const destructiveIndex = actions.findIndex((a) => a.destructive);
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            title: props.title,
+            options: labels,
+            cancelButtonIndex: labels.length - 1,
+            destructiveButtonIndex: destructiveIndex >= 0 ? destructiveIndex : undefined,
+          },
+          (buttonIndex) => {
+            if (buttonIndex != null && buttonIndex < actions.length && !actions[buttonIndex].disabled) {
+              actions[buttonIndex].onPress();
+            }
+          }
+        );
+        return;
+      }
+      setAnchor(ActionMenuPopup_anchor(event));
+      setIsOpen(true);
+      onOpenChange?.(true);
+    },
+    [props.actions, props.title, onOpenChange]
+  );
+
+  const close = useCallback(() => {
+    setIsOpen(false);
+    onOpenChange?.(false);
+  }, [onOpenChange]);
+
+  const webItems = props.actions.map((a, i) => (
+    <DropdownMenuItem
+      key={a.label}
+      isTop={i === 0}
+      data-testid={a.testID}
+      testID={a.testID}
+      disabled={a.disabled}
+      onClick={() => {
+        close();
+        if (!a.disabled) {
+          a.onPress();
+        }
+      }}
+    >
+      <Text className={`whitespace-nowrap ${a.destructive ? "text-text-error" : ""}`}>{a.label}</Text>
+    </DropdownMenuItem>
+  ));
+
+  return (
+    <>
+      {props.renderTrigger(open)}
+      {isOpen && Platform.OS === "web" && anchor != null && (
+        <ActionMenuPopup anchor={anchor} onClose={close}>
+          <DropdownMenu rightOffset="0" onClose={close}>
+            {webItems}
+          </DropdownMenu>
+        </ActionMenuPopup>
+      )}
+      {isOpen && Platform.OS === "web" && anchor == null && (
+        <DropdownMenu rightOffset="3rem" onClose={close}>
+          {webItems}
+        </DropdownMenu>
+      )}
+      {Platform.OS === "android" && (
+        <RNModal transparent visible={isOpen} animationType="fade" onRequestClose={close}>
+          <Pressable className="justify-end flex-1" style={{ backgroundColor: "rgba(0,0,0,0.4)" }} onPress={close}>
+            <Pressable className="pb-8 bg-background-default rounded-t-2xl" onPress={(e) => e.stopPropagation()}>
+              {props.title && (
+                <View className="px-4 py-3 border-b border-border-neutral">
+                  <Text className="text-sm text-center text-text-secondary">{props.title}</Text>
+                </View>
+              )}
+              {props.actions.map((a) => (
+                <Pressable
+                  key={a.label}
+                  data-testid={a.testID}
+                  testID={a.testID}
+                  disabled={a.disabled}
+                  className="px-4 py-4 border-b border-border-neutral"
+                  onPress={() => {
+                    close();
+                    if (!a.disabled) {
+                      a.onPress();
+                    }
+                  }}
+                >
+                  <Text
+                    className={`text-base ${
+                      a.destructive ? "text-text-error" : a.disabled ? "text-text-disabled" : "text-text-primary"
+                    }`}
+                  >
+                    {a.label}
+                  </Text>
+                </Pressable>
+              ))}
+              <Pressable className="px-4 py-4" onPress={close}>
+                <Text className="text-base text-center text-text-secondary">Cancel</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </RNModal>
+      )}
+    </>
+  );
+}

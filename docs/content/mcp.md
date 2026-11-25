@@ -1,0 +1,348 @@
+---
+id: mcp
+title: "MCP Server"
+shortDescription: "Connect AI assistants like Claude or ChatGPT to Liftosaur - create programs, log workouts, and analyze training through natural conversation."
+order: 2
+category: "Integrations"
+datePublished: "2026-03-07"
+dateModified: "2026-10-07"
+---
+
+## What is MCP?
+
+MCP (Model Context Protocol) is an open standard that lets AI assistants connect to external tools. Liftosaur has an MCP server - so you can ask Claude, ChatGPT, or any MCP-compatible assistant to manage your programs and workout history through natural conversation.
+
+For example, you could say "Create a 4-day upper/lower program with linear progression" and the AI will write the Liftoscript code, validate it, and save it to your account.
+
+Requires a premium subscription.
+
+## Connecting to Liftosaur
+
+The Liftosaur MCP server URL is:
+
+```
+https://www.liftosaur.com/mcp
+```
+
+There are two ways to authenticate:
+
+- **OAuth 2.1** (default) - On first use, your AI client opens a browser window to sign in with your Liftosaur account, then handles token refresh automatically. Best for clients with a built-in connector UI (Claude.ai, ChatGPT).
+- **API key** - Pass a Liftosaur API key (the same kind used for the [REST API](/docs/api)) as a Bearer token. No browser sign-in needed - handy for command-line clients or config-file setups. See [Using an API key](#using-an-api-key) below.
+
+Below are setup instructions for each major AI platform.
+
+### Using an API key
+
+If you'd rather not go through the OAuth browser flow, you can authenticate with an API key instead. This is the same key used by the REST API.
+
+1. Open Liftosaur and go to **Settings**
+2. Tap **API Keys**
+3. Tap **Create API Key** and give it a name
+4. Copy the key - it starts with `lftsk_`
+
+Then send it in the `Authorization` header when configuring your MCP client:
+
+```
+Authorization: Bearer lftsk_your_key_here
+```
+
+Most clients that let you set custom headers (Claude Code, config-file setups) support this. The per-client sections below show the API-key variant where applicable. Keep the key secret - if you lose it, delete it and create a new one.
+
+### Claude.ai (Web)
+
+Liftosaur is in the Claude connectors directory. You don't need to paste the MCP server URL.
+
+1. Open [Liftosaur in the Claude directory](https://claude.ai/directory/liftosaur), or open [claude.ai](https://claude.ai), go to **Customize** -> **Connectors**, and search for **Liftosaur**
+2. Click **Connect**
+3. Sign in with your Liftosaur account and approve access
+
+After that, Liftosaur tools will be available in your conversations. You can also add it from the chat input - click the **Search and tools** menu, then **Add connectors**.
+
+The connector is linked to your Claude account, so it also shows up in Claude Desktop, the Claude mobile apps, and Claude Code.
+
+### Claude Desktop
+
+#### Option A: Via the connectors directory
+
+1. Open Claude Desktop
+2. Go to **Customize** -> **Connectors**
+3. Search for **Liftosaur** and click **Connect**
+4. Sign in with your Liftosaur account and approve access
+
+If you already connected Liftosaur on claude.ai, skip this - it's already there.
+
+#### Option B: Via config file
+
+Claude Desktop doesn't support remote servers directly via `claude_desktop_config.json`. Use the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) package as a bridge:
+
+1. Click the **Settings** icon (bottom-left corner)
+2. Go to the **Developer** tab
+3. Click **Edit Config** - this opens `claude_desktop_config.json`
+4. Add the Liftosaur server:
+
+```json
+{
+  "mcpServers": {
+    "liftosaur": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://www.liftosaur.com/mcp"]
+    }
+  }
+}
+```
+
+5. Save the file and restart Claude Desktop
+6. On first use, Claude will open your browser to authenticate with Liftosaur
+
+To use an API key instead of the OAuth browser flow, pass it as a header via `mcp-remote`:
+
+```json
+{
+  "mcpServers": {
+    "liftosaur": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://www.liftosaur.com/mcp",
+        "--header",
+        "Authorization: Bearer lftsk_your_key_here"
+      ]
+    }
+  }
+}
+```
+
+### Claude Code
+
+If you log in to Claude Code with your claude.ai account, connectors you added on claude.ai are available automatically. Connect Liftosaur on claude.ai first (see above), then run `/mcp` in Claude Code - you'll see it as **claude.ai Liftosaur**. This doesn't work when Claude Code uses an Anthropic API key or a cloud provider (Bedrock, Vertex) instead of a claude.ai login.
+
+To add the server directly instead, run this command in your terminal:
+
+```bash
+claude mcp add liftosaur --transport http https://www.liftosaur.com/mcp
+```
+
+Claude Code will prompt for authentication on first use.
+
+To authenticate with an API key instead of the OAuth browser flow, pass it as a header:
+
+```bash
+claude mcp add liftosaur --transport http https://www.liftosaur.com/mcp \
+  --header "Authorization: Bearer lftsk_your_key_here"
+```
+
+### ChatGPT
+
+Liftosaur is available in ChatGPT's Plugin Directory. You don't need to enable Developer Mode or enter the MCP server URL manually.
+
+1. Open [Liftosaur in the ChatGPT Plugin Directory](https://chatgpt.com/plugins/plugin_asdk_app_6a5bb283d24481918813e6efbc3d66ad), or open **Plugins** in ChatGPT and search for **Liftosaur**
+2. Select **Connect**
+3. Sign in with your Liftosaur account and approve access
+4. In a chat, mention **@Liftosaur** in your prompt. You can also select **+** -> **More**, then choose Liftosaur
+
+Plugin availability depends on your ChatGPT plan, region, and workspace settings. If **Connect** is disabled by your workspace administrator, ask them to enable Liftosaur for your role. See [OpenAI's guide to plugins in ChatGPT](https://help.openai.com/en/articles/20001256-plugins-in-chatgpt-and-codex) for more details.
+
+### Gemini (gemini.google.com)
+
+Gemini connects to Liftosaur as a custom app in Gemini Spark, its agent mode. You need a Google AI Pro or Ultra plan, a personal Google account, and an age of 18+. Google allows custom apps only in the US and only in English. The **Keep Activity** setting must be on.
+
+1. On the web, open [gemini.google.com/apps](https://gemini.google.com/apps) and scroll down to **Custom apps for Spark**
+2. Paste `https://www.liftosaur.com/mcp` into the link field and click **Next**
+3. Check the box that you accept the risks of a custom app and click **Connect**
+4. Click **Agree and continue**, then sign in with your Liftosaur account
+5. In **Save your custom app**, click **Connect**
+
+Custom apps work only in Spark, not in a regular Gemini chat. Switch the sidebar from **Chat** to **Spark**, then mention the app in your request, for example `@Liftosaur Mcp fetch my last workout`. After you connect it on the web, it also works in the Gemini mobile app.
+
+### Gemini CLI
+
+Gemini CLI supports remote MCP servers via `settings.json`.
+
+1. Open `~/.gemini/settings.json` (create it if it doesn't exist)
+2. Add the Liftosaur server:
+
+```json
+{
+  "mcpServers": {
+    "liftosaur": {
+      "httpUrl": "https://www.liftosaur.com/mcp",
+      "authProviderType": "dynamic_discovery",
+      "timeout": 30000
+    }
+  }
+}
+```
+
+3. Start a Gemini CLI session
+4. Run `/mcp` to verify the server is connected
+5. On first use, run `/mcp auth liftosaur` to authenticate with your Liftosaur account
+
+To use an API key instead, drop `authProviderType` and pass the key as a header:
+
+```json
+{
+  "mcpServers": {
+    "liftosaur": {
+      "httpUrl": "https://www.liftosaur.com/mcp",
+      "headers": { "Authorization": "Bearer lftsk_your_key_here" },
+      "timeout": 30000
+    }
+  }
+}
+```
+
+### Other MCP Clients
+
+Any MCP-compatible client that supports Streamable HTTP transport can connect. Point it at:
+
+```
+https://www.liftosaur.com/mcp
+```
+
+Authenticate either via OAuth 2.1 (dynamic client registration is supported) or by sending an API key in the `Authorization: Bearer lftsk_...` header.
+
+## What Can You Do With It?
+
+Once connected, you can ask the AI to:
+
+- **Create programs** - describe what you want and it'll write the Liftoscript
+- **Edit programs** - "Add a fourth day focused on arms" or "Change squat progression to 5/3/1"
+- **Review programs** - "Is my program balanced? Am I hitting enough back volume?"
+- **Log workouts** - "I did 3x5 squats at 225lb and 3x8 bench at 155lb today"
+- **Analyze history** - "Show me my last 10 workouts" or "How has my squat progressed?"
+- **Test progressions** - simulate workouts in the playground to verify the logic works
+- **Manage custom exercises** - create, update, or delete exercises not in the built-in list
+- **Configure gyms and equipment** - set up bars, plates, and fixed weights per gym
+- **Tune per-exercise settings** - set your 1RM, weight rounding, equipment, or notes for an exercise
+- **Build dashboards** - "Make me a dashboard with my big three e1RMs, weekly chest sets and bodyweight"
+
+The AI has access to the Liftoscript language reference and built-in program examples, so it can learn the syntax on the fly.
+
+## Available Tools
+
+These are the tools the AI assistant can call on your behalf:
+
+### Programs
+
+| Tool | What it does |
+|------|-------------|
+| `list_programs` | List all your programs (id, name, active status) |
+| `get_program` | Get a program's full Liftoscript source. Use `id=current` for the active one |
+| `create_program` | Create a new program from Liftoscript code |
+| `update_program` | Update an existing program's source code |
+| `delete_program` | Delete a program (can't delete the active one) |
+
+### Workout History
+
+| Tool | What it does |
+|------|-------------|
+| `get_history` | List workout history records. Supports date filtering and pagination |
+| `get_history_record` | Get a single workout record by ID |
+| `create_history_record` | Log a new workout in Liftoscript Workouts format |
+| `update_history_record` | Update an existing workout record |
+| `delete_history_record` | Delete a workout record |
+
+### Custom Exercises
+
+| Tool | What it does |
+|------|-------------|
+| `list_custom_exercises` | List your custom exercises. Supports pagination via limit/cursor |
+| `get_custom_exercise` | Get a single custom exercise by ID |
+| `create_custom_exercise` | Create a custom exercise with name, target/synergist muscles, and types |
+| `update_custom_exercise` | Update an existing custom exercise. Only provided fields change |
+| `delete_custom_exercise` | Delete a custom exercise |
+
+### Gyms and Equipment
+
+| Tool | What it does |
+|------|-------------|
+| `list_gyms` | List your gyms (id, name, current flag, equipment count) |
+| `create_gym` | Create a new gym, copying the current gym's equipment |
+| `update_gym` | Rename a gym and/or make it the current one |
+| `delete_gym` | Delete a gym (can't delete the last one) |
+| `list_equipment` | List a gym's equipment, including soft-deleted ones |
+| `get_equipment` | Get a single equipment's full config (bar, plates, fixed weights, etc.) |
+| `update_equipment` | Update equipment config; set `isDeleted` to hide/restore it |
+| `create_custom_equipment` | Create a new custom equipment in a gym |
+
+### Exercise Settings
+
+| Tool | What it does |
+|------|-------------|
+| `list_exercise_data` | List per-exercise customizations (1RM, rounding, equipment overrides, notes, muscles, unilateral) |
+| `get_exercise_data` | Get the stored customizations for one exercise key (e.g. `squat_barbell`) |
+| `set_exercise_data` | Set/upsert per-exercise settings; pass `null` for a field to clear it |
+| `delete_exercise_data` | Clear all stored customizations for an exercise key |
+
+### Measurements
+
+| Tool | What it does |
+|------|-------------|
+| `list_measurements` | Overview of tracked measurements — body (bodyweight, body parts, bodyfat) and daily health metrics (sleep, calories, protein): count + latest value per key |
+| `get_measurement` | Get the recorded history for one key (e.g. `weight`, `chest`, `bodyfat`, `sleep`, `calories`), newest-first, paginated |
+| `add_measurement` | Record a new value with a unit suffix (e.g. `180lb`, `37cm`, `18%`); timestamp defaults to now. Health keys are read-only |
+| `update_measurement` | Change the reading at a given timestamp (the timestamp itself is fixed — re-date via delete + add) |
+| `delete_measurement` | Delete a single recorded value (imported health records are hidden rather than deleted) |
+
+### Dashboards
+
+Dashboards are the Graphs tab. Each one is a text document in Liftograph format: graphs, big numbers, a muscle map and a training calendar.
+
+| Tool | What it does |
+|------|-------------|
+| `list_dashboards` | List your dashboards (id, name, which one the app shows) |
+| `get_dashboard` | Get a dashboard's Liftograph text. Use `id=current` for the one the app shows |
+| `run_dashboard` | Evaluate dashboard text against your real history and measurements without saving: errors, and a summary of each widget's data |
+| `create_dashboard` | Create a dashboard. It becomes the one the app shows unless `makeCurrent` is `false` |
+| `update_dashboard` | Change a dashboard's name, text, or both. `makeCurrent: true` switches the app to it |
+| `delete_dashboard` | Delete a dashboard (can't delete the last one) |
+
+### Testing and Analysis
+
+| Tool | What it does |
+|------|-------------|
+| `run_playground` | Simulate a workout - complete sets, run progressions, verify logic works |
+| `get_program_stats` | Analyze a program: duration per day, weekly volume per muscle group, strength vs hypertrophy split |
+
+### Reference (No Auth Required)
+
+These tools don't need authentication - the AI can call them anytime:
+
+| Tool | What it does |
+|------|-------------|
+| `get_liftoscript_reference` | Liftoscript language reference - syntax, progressions, templates |
+| `get_liftoscript_examples` | Complete program examples (5/3/1, GZCLP, PPL, etc.) |
+| `get_program_design_guide` | Evidence-based program design guide - volume targets, progressions, splits, deloads |
+| `get_liftohistory_reference` | Liftoscript Workouts format reference for workout records |
+| `get_liftograph_reference` | Liftograph dashboard format reference, with complete example dashboards |
+| `list_exercises` | All built-in exercise names and equipment variants |
+| `list_builtin_programs` | List of built-in programs available in the app |
+| `get_builtin_program` | Full source of a built-in program - great for learning Liftoscript |
+
+## Example Conversations
+
+**Creating a program:**
+> "Create a 3-day full body program for a beginner. Linear progression, compound lifts only. Start with light weights."
+
+The AI will read the Liftoscript reference, write the program, test it in the playground, and save it to your account.
+
+**Analyzing your training:**
+> "Pull my last month of workouts and tell me if I'm progressing on squat."
+
+The AI fetches your history, looks at the weights and reps over time, and gives you feedback.
+
+**Tweaking a program:**
+> "My current program doesn't have enough back work. Add pull-ups and barbell rows."
+
+The AI reads your current program, modifies the Liftoscript to add the exercises with appropriate progression, and saves the update.
+
+## Tips
+
+- The AI should read `get_liftoscript_reference` before writing any program. If it doesn't, remind it.
+- Use `run_playground` to test before saving. Catches syntax errors and lets you verify progressions work.
+- `get_program_stats` is useful for checking program balance - volume per muscle group, session duration, etc.
+- Built-in programs (`list_builtin_programs` + `get_builtin_program`) are great examples for the AI to learn from.
+
+## REST API
+
+If you want direct programmatic access instead of going through an AI assistant, Liftosaur also has a [REST API](/docs/api) with the same capabilities. Generate an API key in Settings and make HTTP requests directly.

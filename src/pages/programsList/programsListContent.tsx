@@ -1,0 +1,55 @@
+import type { JSX } from "react";
+import { MockAudioInterface } from "../../lib/audioInterface";
+import { IAccount } from "../../models/account";
+import { IEnv } from "../../models/state";
+import { IStorage } from "../../types";
+import { AsyncQueue } from "../../utils/asyncQueue";
+import { Persistence } from "../../utils/persistence";
+import { TimerBridge } from "../../utils/nativeTimerBridge";
+import { WorkoutBridge } from "../../utils/nativeWorkoutBridge";
+import { WatchBridge } from "../../utils/nativeWatchBridge";
+import { Keychain } from "../../utils/keychainStore";
+import { Dialog_prompt } from "../../utils/dialog";
+import { LoginConflictPrompt } from "../../utils/loginConflictPrompt";
+import { WorkoutMirroring } from "../../utils/nativeWorkoutMirroringBridge";
+import { HeartRateStore } from "../../utils/heartRateStore";
+import { ProgramContentList } from "../program/programContentList";
+import { Service } from "../../api/service";
+
+export interface IProgramsListContentProps {
+  account: IAccount;
+  storage: IStorage;
+  isMobile: boolean;
+  client: Window["fetch"];
+  deviceId: string;
+}
+
+export function ProgramsListContent(props: IProgramsListContentProps): JSX.Element {
+  const queue = new AsyncQueue();
+  const audio = new MockAudioInterface();
+  const service = new Service(props.client);
+  const mirroring = new WorkoutMirroring();
+  const env: IEnv = {
+    queue,
+    audio,
+    service,
+    persistence: new Persistence(),
+    timer: new TimerBridge(),
+    workout: new WorkoutBridge(),
+    watch: new WatchBridge(),
+    keychain: new Keychain(),
+    mirroring,
+    heartRate: new HeartRateStore(mirroring),
+    loginConflict: new LoginConflictPrompt(Dialog_prompt),
+  };
+  return (
+    <ProgramContentList
+      service={service}
+      isMobile={props.isMobile}
+      account={props.account}
+      storage={props.storage}
+      deviceId={props.deviceId}
+      env={env}
+    />
+  );
+}

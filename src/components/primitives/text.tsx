@@ -1,0 +1,101 @@
+import { Text as RNText, TextProps, Platform } from "react-native";
+import { JSX } from "react";
+import { Translate_children } from "../../i18n/translate";
+
+// personal-fork: text-button-primarylabel is a text color too, so the default ink must not override it
+const textColorPattern =
+  /\btext-(icon|text|button|syntax|red|green|blue|yellow|purple|gray|slate|zinc|stone|neutral|orange|amber|lime|emerald|teal|cyan|sky|indigo|violet|fuchsia|pink|rose|white|black|transparent|inherit|current)\b/;
+const textSizePattern = /\btext-(2xs|xs|sm|base|lg|xl|\dxl|\[)/;
+
+export function Text_hasSizeClass(className: string | undefined): boolean {
+  return className != null && textSizePattern.test(className);
+}
+
+export function Text_resolveFontFamily(className: string | undefined): string {
+  return resolveFontFamily(className);
+}
+
+function resolveFontFamily(className: string | undefined): string {
+  // personal-fork: web follows the theme font (theme/personal.json) instead of Poppins
+  if (Platform.OS === "web") {
+    return "var(--font-sans)";
+  }
+  if (Platform.OS !== "android") {
+    return "Poppins";
+  }
+  const isBold = className != null && /\bfont-bold\b/.test(className);
+  const isSemiBold = className != null && /\bfont-semibold\b/.test(className);
+  const isItalic = className != null && /\bitalic\b/.test(className);
+  if (isBold && isItalic) {
+    return "Poppins-BoldItalic";
+  }
+  if (isBold) {
+    return "Poppins-Bold";
+  }
+  if (isSemiBold && isItalic) {
+    return "Poppins-SemiBoldItalic";
+  }
+  if (isSemiBold) {
+    return "Poppins-SemiBold";
+  }
+  if (isItalic) {
+    return "Poppins-Italic";
+  }
+  return "Poppins-Regular";
+}
+
+// RN's <Text> with none of the defaults Text injects below - for nested spans, which would
+// otherwise get text-base forced on them, and for trees that resolve their own font family.
+export function TextRaw({
+  noTranslate,
+  i18nContext,
+  children,
+  ...props
+}: TextProps & { className?: string; noTranslate?: boolean; i18nContext?: string }): JSX.Element {
+  return (
+    <RNText allowFontScaling={false} {...props}>
+      {noTranslate ? children : Translate_children(children, i18nContext)}
+    </RNText>
+  );
+}
+
+// The OS font scale is folded into the rem instead (see Settings_getTextSize), which moves
+// spacing and icons along with the type. Letting RN also scale fontSize here would apply it
+// twice, and only to the text, so it would overflow boxes that didn't grow.
+export function Text({
+  style,
+  className,
+  noTranslate,
+  i18nContext,
+  children,
+  ...props
+}: TextProps & {
+  className?: string;
+  "data-testid"?: string;
+  noTranslate?: boolean;
+  i18nContext?: string;
+}): JSX.Element {
+  const defaults: string[] = [];
+  if (className == null || !textColorPattern.test(className)) {
+    defaults.push("text-text-primary");
+  }
+  if (className == null || !textSizePattern.test(className)) {
+    defaults.push("text-base");
+  }
+  const effectiveClassName =
+    defaults.length > 0 ? (className ? `${defaults.join(" ")} ${className}` : defaults.join(" ")) : className;
+  const fontFamily = resolveFontFamily(effectiveClassName);
+  const dataTestid = (props as { "data-testid"?: string })["data-testid"];
+  const testID = props.testID || dataTestid;
+  return (
+    <RNText
+      className={effectiveClassName}
+      style={[{ fontFamily }, style]}
+      allowFontScaling={false}
+      {...props}
+      testID={testID}
+    >
+      {noTranslate ? children : Translate_children(children, i18nContext)}
+    </RNText>
+  );
+}

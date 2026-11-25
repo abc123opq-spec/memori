@@ -1,0 +1,226 @@
+import { JSX, memo, useMemo } from "react";
+import { View } from "react-native";
+import { Text } from "./primitives/text";
+import { FastText } from "./primitives/fastText";
+import { IDisplaySet, Reps_group, Reps_setToDisplaySet } from "../models/set";
+import { ISet, IUnit } from "../types";
+import { CollectionUtils_compact } from "../utils/collection";
+import { ObjectUtils_keys } from "../utils/object";
+import { IHistoryEntryPersonalRecords } from "../models/history";
+import { StyledText, StyledText_remToPx } from "../utils/styledText";
+import { useRem } from "../utils/useRem";
+import { Tailwind_semantic, Tailwind_colors } from "../utils/tailwindConfig";
+import { TimeUtils_formatMMSS } from "../utils/time";
+import { Translate_format, Translate_text } from "../i18n/translate";
+import { PersonalFormat_prMark } from "../personal/format";
+import { Language_current } from "../i18n/language";
+
+function addRecordedDuration(
+  builder: StyledText,
+  seconds: number,
+  timerColor: string,
+  xs: number,
+  testID: string
+): void {
+  if (seconds < 60) {
+    builder.add(`${seconds}`, { fontWeight: "600", color: timerColor }, testID);
+    builder.add("s", { fontSize: xs, color: timerColor });
+  } else {
+    builder.add(TimeUtils_formatMMSS(seconds * 1000), { fontWeight: "600", color: timerColor }, testID);
+  }
+}
+
+function isSameDisplaySet(a: IDisplaySet, b: IDisplaySet): boolean {
+  return (
+    a.reps === b.reps &&
+    a.weight === b.weight &&
+    a.rpe === b.rpe &&
+    a.askWeight === b.askWeight &&
+    a.timer === b.timer &&
+    a.setTimer === b.setTimer &&
+    a.setTimerLeft === b.setTimerLeft &&
+    a.isOverflowSetTimer === b.isOverflowSetTimer &&
+    a.auto === b.auto
+  );
+}
+
+interface IHistoryRecordSetsProps {
+  showPrDetails?: boolean;
+  sets: ISet[];
+  isNext: boolean;
+  units: IUnit;
+  prs?: IHistoryEntryPersonalRecords;
+}
+
+export const HistoryRecordSetsView = memo(function HistoryRecordSetsView(props: IHistoryRecordSetsProps): JSX.Element {
+  const { sets, isNext, units } = props;
+  const displayGroups = useMemo(() => {
+    const groups = Reps_group(sets, isNext);
+    return groups.map((g) => g.map((set) => Reps_setToDisplaySet(set, isNext, units)));
+  }, [sets, isNext, units]);
+  return (
+    <View className="text-sm" style={{ alignItems: "flex-end" }}>
+      {displayGroups.map((g, i) => (
+        <HistoryRecordSet
+          key={i}
+          sets={g}
+          prs={props.prs}
+          isNext={props.isNext}
+          showPrDetails={props.showPrDetails}
+          units={props.units}
+        />
+      ))}
+    </View>
+  );
+});
+
+interface IHistoryRecordSet2Props {
+  prs?: IHistoryEntryPersonalRecords;
+  units: IUnit;
+  showPrDetails?: boolean;
+  sets: IDisplaySet[];
+  isNext: boolean;
+}
+
+export const HistoryRecordSet = memo(function HistoryRecordSet(props: IHistoryRecordSet2Props): JSX.Element {
+  const { isNext } = props;
+  const group = props.sets;
+  const set = group[0];
+  if (set == null) {
+    return <View />;
+  }
+  const prTypes = CollectionUtils_compact(
+    ObjectUtils_keys(props.prs || {}).map<"e1RM" | "Weight" | undefined>((k) => {
+      const prset = (props.prs || {})[k];
+      if (!prset) {
+        return undefined;
+      }
+      const displayPrSet = Reps_setToDisplaySet(prset, isNext, props.units);
+      return isSameDisplaySet(set, displayPrSet)
+        ? k === "max1RMSet"
+          ? "e1RM"
+          : k === "maxWeightSet"
+            ? "Weight"
+            : undefined
+        : undefined;
+    })
+  );
+  const isPr = prTypes.length > 0;
+  const rem = useRem();
+  const sem = Tailwind_semantic();
+  const primary = sem.text.primary;
+  const secondary = sem.text.secondary;
+  const purple = sem.text.purple;
+  // `text-orange-400` (in-range reps) has no semantic/stock entry; reuse the project's
+  // warning yellow as the closest design-system color.
+  // personal-fork: completed reps take the ink colour; only short sets keep a status colour
+  const repsColor = isNext
+    ? secondary
+    : set.isCompleted
+      ? primary
+      : set.isInRange
+        ? Tailwind_colors().yellow[600]
+        : sem.text.error;
+  const rpeColor = isNext ? secondary : set.isRpeFailed ? sem.text.error : sem.text.success;
+  const timerColor = isNext ? secondary : purple;
+  const autoColor = isNext ? secondary : sem.syntax.auto;
+  const dataCy = isNext
+    ? "history-entry-sets-next"
+    : set.isCompleted
+      ? "history-entry-sets-completed"
+      : set.isInRange
+        ? "history-entry-sets-in-range"
+        : "history-entry-sets-incompleted";
+
+  const sm = StyledText_remToPx("sm", rem);
+  const xs = StyledText_remToPx("xs", rem);
+  const builder = new StyledText();
+  // personal-fork: in Japanese a set with no reps entered reads as a grey "not logged", not a red dash
+  if (!isNext && set.reps === "-" && Language_current() === "ja") {
+    const label =
+      group.length > 1
+        ? `${Translate_format("{n} Sets", { n: group.length })} ${Translate_text("not logged")}`
+        : Translate_text("not logged");
+    builder.add(label, { color: secondary }, "history-entry-not-logged");
+    const notLogged = builder.build();
+    return (
+      <View className="flex-row items-center" data-testid={dataCy} testID={dataCy}>
+        <FastText text={notLogged.text} fragments={notLogged.fragments} color={secondary} fontSize={sm} />
+      </View>
+    );
+  }
+  if (group.length > 1) {
+    builder.add(`${group.length}`, { fontWeight: "600", color: primary }, "history-entry-sets");
+    builder.add(" \u00D7 ", { color: secondary });
+  }
+  builder.add(`${set.reps}`, { fontWeight: "600", color: repsColor }, "history-entry-reps");
+  const isBodyweightLoad = set.weight === "0" && Language_current() === "ja";
+  if (isBodyweightLoad) {
+    builder.add(" \u00D7 ", { color: secondary });
+    builder.add(Translate_text("Bodyweight", "load"), { fontWeight: "600" }, "history-entry-weight");
+  } else if (set.weight) {
+    builder.add(" \u00D7 ", { color: secondary });
+    builder.add(`${set.weight}`, { fontWeight: "600" }, "history-entry-weight");
+    builder.add(set.askWeight ? "+" : "");
+    if (set.unit != null) {
+      builder.add(`${set.unit}`, { color: secondary }, "history-entry-unit");
+    }
+  }
+  if (set.rpe != null) {
+    builder.add(" @", { fontSize: xs, color: rpeColor });
+    builder.add(`${set.rpe}`, { color: rpeColor }, "history-entry-rpe");
+  }
+  if (isNext && set.setTimer != null) {
+    builder.add(" ");
+    builder.add(`${set.setTimer}`, { fontWeight: "600", color: timerColor }, "history-entry-set-timer");
+    builder.add("s", { fontSize: xs, color: timerColor });
+    builder.add(`${set.isOverflowSetTimer ? "+" : ""}|`, { fontWeight: "600", color: timerColor });
+    if (set.timer != null) {
+      builder.add(`${set.timer}`, { fontWeight: "600", color: timerColor }, "history-entry-timer");
+      builder.add("s", { fontSize: xs, color: timerColor });
+    } else {
+      builder.add("?", { fontWeight: "600", color: timerColor });
+    }
+  } else if (!isNext && (set.setTimer != null || set.setTimerLeft != null)) {
+    builder.add(" ");
+    if (set.setTimerLeft != null) {
+      addRecordedDuration(builder, set.setTimerLeft, timerColor, xs, "history-entry-set-timer-left");
+      builder.add("/", { fontWeight: "600", color: timerColor });
+      if (set.setTimer == null) {
+        builder.add("-", { fontWeight: "600", color: timerColor }, "history-entry-set-timer");
+      }
+    }
+    if (set.setTimer != null) {
+      addRecordedDuration(builder, set.setTimer, timerColor, xs, "history-entry-set-timer");
+    }
+  } else if (set.timer != null) {
+    builder.add(" ");
+    builder.add(`${set.timer}`, { color: timerColor }, "history-entry-timer");
+    builder.add("s", { fontSize: xs, color: timerColor });
+  }
+  if (set.auto) {
+    builder.add(" auto", { color: autoColor }, "history-entry-auto");
+  }
+  const built = builder.build();
+
+  return (
+    <View className="flex-row items-center" data-testid={dataCy} testID={dataCy}>
+      {props.showPrDetails && isPr && (
+        <View className="flex-row items-center mr-2">
+          <Text noTranslate={true} className="text-xs font-bold leading-scaled-6 text-text-primary">
+            {prTypes.map((type) => Translate_text(type)).join(", ")}
+            {PersonalFormat_prMark()}
+          </Text>
+        </View>
+      )}
+      <FastText
+        text={built.text}
+        fragments={built.fragments}
+        color={primary}
+        fontSize={sm}
+        paddingHorizontal={rem / 4}
+        backgroundColor={isPr ? sem.background.neutral : undefined}
+      />
+    </View>
+  );
+});

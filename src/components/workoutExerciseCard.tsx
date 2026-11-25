@@ -1,0 +1,621 @@
+import { PersonalFormat_label } from "../personal/format";
+import {
+  ExerciseDisplayName_exerciseEquipment,
+  ExerciseDisplayName_full,
+  ExerciseDisplayName_withEquipment,
+} from "../i18n/exerciseDisplayName";
+import { JSX, memo, useCallback, useMemo, useRef, useState } from "react";
+import { View, Pressable, Platform } from "react-native";
+import { Text } from "./primitives/text";
+import { Translate_format, Translate_text } from "../i18n/translate";
+import {
+  IHistoryEntry,
+  IHistoryRecord,
+  IProgramState,
+  IProgressMode,
+  ISettings,
+  IStats,
+  ISubscription,
+} from "../types";
+import { updateProgress, updateSettings } from "../models/state";
+import { lb } from "lens-shmens";
+import { Exercise_get, Exercise_getNotes, Exercise_onerm } from "../models/exercise";
+import { IconArrowRight } from "./icons/iconArrowRight";
+import { ActionSheet_show } from "../utils/actionSheet";
+import { LinkButton } from "./linkButton";
+import { ProgramExercise_doesUse1RM } from "../models/programExercise";
+import { Weight_print } from "../models/weight";
+import { Markdown } from "./markdown";
+import {
+  IWorkoutSetExpansionOverride,
+  WorkoutSetExpansion_expanded,
+  WorkoutSetExpansion_shouldCollapseSetsAfterComplete,
+  WorkoutSetExpansion_toggle,
+} from "../utils/workoutSetExpansion";
+import { WorkoutHints_recordUseInState } from "../utils/workoutHintsDispatch";
+import { IWorkoutExerciseSetsExpansion } from "./workoutExerciseAllSets";
+import { CollectionUtils_removeAt } from "../utils/collection";
+import { IconKebab } from "./icons/iconKebab";
+import { Tailwind_semantic } from "../utils/tailwindConfig";
+import { useRemScale } from "../utils/useRem";
+import { Subscriptions_hasSubscription } from "../utils/subscriptions";
+import {
+  Thunk_openEquipmentModal,
+  Thunk_pushExerciseStatsScreen,
+  Thunk_pushToEditProgramExercise,
+} from "../ducks/thunks";
+import { WorkoutExerciseAllSets } from "./workoutExerciseAllSets";
+import { DropdownMenu, DropdownMenuItem } from "./dropdownMenu";
+import { IconSwap } from "./icons/iconSwap";
+import { IconTrash } from "./icons/iconTrash";
+import { IconEdit2 } from "./icons/iconEdit2";
+import { TextareaAutogrow } from "./textareaAutogrow";
+import { Progress_doesUse1RM, Progress_editExerciseNotes } from "../models/progress";
+import { StringUtils_dashcase } from "../utils/string";
+import { GroupHeader } from "./groupHeader";
+import { Settings_getNextTargetType } from "../models/settings";
+import { IPrevExerciseData } from "../models/history";
+import { DateUtils_format } from "../utils/date";
+import { IDispatch } from "../ducks/types";
+import { IEvaluatedProgram, IEvaluatedProgramDay, Program_getProgramExerciseForKeyAndDay } from "../models/program";
+import { Equipment_getEquipmentDataForExerciseType } from "../models/equipment";
+import { PlannerProgramExercise_currentDescription } from "../pages/planner/models/plannerProgramExercise";
+import { IByExercise } from "../pages/planner/plannerEvaluator";
+import { useTrackClick } from "../utils/clickTracking";
+import { IconReorder } from "./icons/iconReorder";
+import { IconNotebook } from "./icons/iconNotebook";
+import { navigateToModal } from "../navigation/navigationService";
+import { Dialog_confirm } from "../utils/dialog";
+import { usePerfRenderCount } from "../utils/usePerfRenderCount";
+import { usePerfWhyRender } from "../utils/usePerfWhyRender";
+import { IWeightDeviation } from "../models/weightDeviation";
+
+interface IWorkoutExerciseCardProps {
+  entry: IHistoryEntry;
+  entryIndex: number;
+  program?: IEvaluatedProgram;
+  programDay?: IEvaluatedProgramDay;
+  day: number;
+  prevData?: IPrevExerciseData;
+  progressId: number;
+  supersetEntry?: IHistoryEntry;
+  progressUserPromptedStateVars?: Partial<Record<string, IProgramState>>;
+  isCurrentProgress: boolean;
+  stats: IStats;
+  settings: ISettings;
+  dispatch: IDispatch;
+  subscription: ISubscription;
+  showHelp?: boolean;
+  helps: string[];
+  otherStates?: IByExercise<IProgramState>;
+  onTitleLayout?: (title: View) => void;
+  onUpdateProgramWeight?: (programExerciseId: string, deviation: IWeightDeviation) => void;
+}
+
+type IKebabAction = "edit" | "swap" | "superset" | "notes" | "remove";
+
+function WorkoutExerciseCardInner(props: IWorkoutExerciseCardProps): JSX.Element {
+  usePerfRenderCount("WorkoutExerciseCard");
+  usePerfWhyRender("sets-grid", props as unknown as Record<string, unknown>);
+  const trackClick = useTrackClick();
+  const programExerciseId = props.entry.programExerciseId;
+  const programExercise = useMemo(
+    () =>
+      props.program && programExerciseId
+        ? Program_getProgramExerciseForKeyAndDay(props.program, props.day, programExerciseId)
+        : undefined,
+    [props.program, props.day, programExerciseId]
+  );
+  const exerciseType = props.entry.exercise;
+  const settings = props.settings;
+  const exercise = Exercise_get(exerciseType, settings.exercises);
+  const currentEquipmentName = ExerciseDisplayName_exerciseEquipment(settings, exercise);
+  const currentEquipmentNotes = Equipment_getEquipmentDataForExerciseType(settings, exercise)?.notes;
+  const exerciseNotes = Exercise_getNotes(exerciseType, settings);
+  const description = programExercise
+    ? PlannerProgramExercise_currentDescription(programExercise)
+    : props.entry.descriptionSnapshot;
+  const onerm = Exercise_onerm(exercise, settings);
+  const lbSets = useMemo(() => lb<IHistoryRecord>().p("entries").i(props.entryIndex).p("sets"), [props.entryIndex]);
+  const lbWarmupSets = useMemo(
+    () => lb<IHistoryRecord>().p("entries").i(props.entryIndex).p("warmupSets"),
+    [props.entryIndex]
+  );
+  const lastHistoryEntry = props.prevData?.lastEntry;
+  const lastNote = props.prevData?.lastNote;
+  const timestamp = props.prevData?.lastNoteTimestamp;
+
+  const [isKebabMenuOpen, setIsKebabMenuOpen] = useState(false);
+  const supersetEntry = props.supersetEntry;
+  const supersetExercise = supersetEntry ? Exercise_get(supersetEntry.exercise, props.settings.exercises) : undefined;
+
+  const { dispatch, entry, entryIndex, progressId } = props;
+  const entryExercise = entry.exercise;
+  const entryId = entry.id;
+  const pickerSort = settings.workoutSettings.pickerSort;
+
+  const openEquipmentModal = useCallback((): void => {
+    dispatch(Thunk_openEquipmentModal(progressId, entryExercise));
+  }, [dispatch, entryExercise, progressId]);
+
+  const openSupersetPicker = useCallback((): void => {
+    updateProgress(
+      dispatch,
+      [lb<IHistoryRecord>().pi("ui", {}).p("showSupersetPicker").record(entry)],
+      "change-superset"
+    );
+    navigateToModal("supersetPickerModal", { progressId });
+  }, [dispatch, entry, progressId]);
+
+  const openRm1Modal = useCallback((): void => {
+    updateProgress(
+      dispatch,
+      [lb<IHistoryRecord>().pi("ui", {}).p("rm1Modal").record({ exerciseType: entryExercise })],
+      "change-rm1"
+    );
+    navigateToModal("rm1Modal", { context: "workout", progressId });
+  }, [dispatch, entryExercise, progressId]);
+
+  const swapExercise = useCallback((): void => {
+    updateProgress(
+      dispatch,
+      [
+        lb<IHistoryRecord>()
+          .pi("ui", {})
+          .p("exercisePicker")
+          .record({
+            state: {
+              mode: "workout",
+              screenStack: ["exercisePicker"],
+              sort: pickerSort ?? "name_asc",
+              filters: {},
+              selectedExercises: [],
+              entryIndex,
+              exerciseType: entryExercise,
+            },
+          }),
+      ],
+      "kebab-swap-exercise"
+    );
+  }, [dispatch, entryExercise, entryIndex, pickerSort]);
+
+  const showExerciseNotes = !!settings.workoutSettings.showExerciseNotes;
+  const toggleExerciseNotes = useCallback((): void => {
+    updateSettings(
+      dispatch,
+      lb<ISettings>().p("workoutSettings").p("showExerciseNotes").record(!showExerciseNotes),
+      "toggle-exercise-notes"
+    );
+  }, [dispatch, showExerciseNotes]);
+
+  const editSuperset = useCallback((): void => {
+    updateProgress(
+      dispatch,
+      [lb<IHistoryRecord>().pi("ui", {}).p("showSupersetPicker").record(entry)],
+      "kebab-edit-superset"
+    );
+    navigateToModal("supersetPickerModal", { progressId });
+  }, [dispatch, entry, progressId]);
+
+  const removeExercise = useCallback(async (): Promise<void> => {
+    if (!(await Dialog_confirm(Translate_text("Do you want to remove this exercise in this workout only?")))) {
+      return;
+    }
+    updateProgress(
+      dispatch,
+      [
+        lb<IHistoryRecord>()
+          .p("entries")
+          .recordModify((entries) => {
+            const newEntries = CollectionUtils_removeAt(entries, entryIndex);
+            for (const e of newEntries) {
+              if (e.superset && e.superset === entryId) {
+                e.superset = undefined;
+              }
+            }
+            return newEntries;
+          }),
+        lb<IHistoryRecord>()
+          .p("currentEntryIndex")
+          .recordModify((index) => Math.max(0, (index ?? 0) - 1)),
+      ],
+      "kebab-delete-exercise"
+    );
+  }, [dispatch, entryIndex, entryId]);
+
+  const programIdForEdit = props.program?.id;
+  const editProgramExercise = useCallback((): void => {
+    if (programExercise) {
+      dispatch(
+        Thunk_pushToEditProgramExercise(programExercise.key, programExercise.dayData, {
+          workoutProgramId: programIdForEdit,
+        })
+      );
+    }
+  }, [dispatch, programExercise, programIdForEdit]);
+
+  const runKebabAction = useCallback(
+    (action: IKebabAction): void => {
+      trackClick(`workout-kebab-${action}`);
+      setIsKebabMenuOpen(false);
+      if (action === "edit") {
+        editProgramExercise();
+      } else if (action === "swap") {
+        swapExercise();
+      } else if (action === "superset") {
+        editSuperset();
+      } else if (action === "notes") {
+        toggleExerciseNotes();
+      } else if (action === "remove") {
+        removeExercise().catch(() => undefined);
+      }
+    },
+    [editProgramExercise, swapExercise, editSuperset, toggleExerciseNotes, removeExercise, trackClick]
+  );
+
+  const kebabActions = useMemo<Array<{ action: IKebabAction; label: string }>>(() => {
+    const actions: Array<{ action: IKebabAction; label: string }> = [];
+    if (programExercise && programExerciseId) {
+      actions.push({ action: "edit", label: "Edit Program Exercise" });
+    }
+    actions.push({ action: "swap", label: "Swap Exercise" });
+    actions.push({ action: "superset", label: "Edit Superset" });
+    actions.push({ action: "notes", label: showExerciseNotes ? "Hide Exercise Notes" : "Show Exercise Notes" });
+    actions.push({ action: "remove", label: "Remove Exercise" });
+    return actions;
+  }, [programExercise, programExerciseId, showExerciseNotes]);
+
+  const helps = props.helps;
+  const [expansionOverride, setExpansionOverride] = useState<IWorkoutSetExpansionOverride>(undefined);
+  const [isSetMenuOpen, setIsSetMenuOpen] = useState(false);
+  const shouldCollapseSets = !!settings.workoutSettings.shouldCollapseSets;
+  const expandedSetValue = WorkoutSetExpansion_expanded(entry, expansionOverride, shouldCollapseSets);
+  const expandedSet = useMemo(() => expandedSetValue, [expandedSetValue?.mode, expandedSetValue?.setIndex]);
+  // Read through a ref, so the callback survives a set completion and the other rows skip rendering.
+  const toggleInputRef = useRef({ entry, expansionOverride, helps, shouldCollapseSets, expandedSet });
+  toggleInputRef.current = { entry, expansionOverride, helps, shouldCollapseSets, expandedSet };
+  const onToggleExpand = useCallback(
+    (mode: IProgressMode, setIndex: number): void => {
+      const current = toggleInputRef.current;
+      const next = WorkoutSetExpansion_toggle(
+        current.entry,
+        current.expansionOverride,
+        current.shouldCollapseSets,
+        mode,
+        setIndex
+      );
+      setExpansionOverride(next);
+      trackClick(next?.kind === "collapsed" ? "workout-set-collapse" : "workout-set-expand");
+      if (next?.kind === "expanded") {
+        WorkoutHints_recordUseInState(dispatch, current.helps, "workout-set-expand");
+      }
+    },
+    [dispatch, trackClick]
+  );
+  const onCompleteSet = useCallback(
+    (mode: IProgressMode, setIndex: number): void => {
+      const current = toggleInputRef.current;
+      const next = WorkoutSetExpansion_shouldCollapseSetsAfterComplete(
+        current.entry,
+        current.expandedSet,
+        current.shouldCollapseSets,
+        mode,
+        setIndex
+      );
+      if (next !== current.shouldCollapseSets) {
+        updateSettings(
+          dispatch,
+          lb<ISettings>().p("workoutSettings").p("shouldCollapseSets").record(next),
+          "toggle-collapse-sets"
+        );
+      }
+    },
+    [dispatch]
+  );
+  const isMultiweek = (props.program?.weeks.length ?? 0) > 1;
+  const expansion = useMemo<IWorkoutExerciseSetsExpansion>(
+    () => ({
+      expanded: expandedSet,
+      onToggle: onToggleExpand,
+      onComplete: onCompleteSet,
+      prevData: props.prevData,
+      isMultiweek,
+      onMenuOpenChange: setIsSetMenuOpen,
+    }),
+    [expandedSet, onToggleExpand, onCompleteSet, props.prevData, isMultiweek]
+  );
+
+  const subscription = props.subscription;
+  const onTargetClick = useCallback((): void => {
+    trackClick("workout-target-type");
+    updateSettings(
+      dispatch,
+      lb<ISettings>()
+        .p("workoutSettings")
+        .p("targetType")
+        .recordModify((type) =>
+          Settings_getNextTargetType(type, !Subscriptions_hasSubscription(subscription) || !currentEquipmentName)
+        ),
+      "Change target type"
+    );
+    WorkoutHints_recordUseInState(dispatch, helps, "workout-target-switch");
+  }, [dispatch, subscription, currentEquipmentName, trackClick, helps]);
+
+  const onKebabPress = useCallback((): void => {
+    trackClick("workout-exercise-kebab");
+    if (Platform.OS === "web") {
+      setIsKebabMenuOpen(true);
+      return;
+    }
+    const labels = kebabActions.map((a) => Translate_text(a.label)).concat(Translate_text("Cancel"));
+    ActionSheet_show(
+      {
+        options: labels,
+        cancelButtonIndex: labels.length - 1,
+        destructiveButtonIndex: kebabActions.findIndex((a) => a.action === "remove"),
+      },
+      (buttonIndex) => {
+        if (buttonIndex != null && buttonIndex < kebabActions.length) {
+          runKebabAction(kebabActions[buttonIndex].action);
+        }
+      }
+    );
+  }, [kebabActions, runKebabAction, trackClick]);
+
+  const titleRef = useRef<View>(null);
+  const { onTitleLayout: onTitleLayoutProp } = props;
+  const onTitleLayout = useCallback(() => {
+    if (titleRef.current != null) {
+      onTitleLayoutProp?.(titleRef.current);
+    }
+  }, [onTitleLayoutProp]);
+
+  const onPressExerciseStats = useCallback(() => {
+    trackClick("workout-exercise-stats");
+    dispatch(Thunk_pushExerciseStatsScreen(entryExercise));
+  }, [dispatch, entryExercise, trackClick]);
+
+  const onChangeNotes = useCallback(
+    (text: string) => {
+      Progress_editExerciseNotes(dispatch, entryIndex, text);
+    },
+    [dispatch, entryIndex]
+  );
+
+  const onCloseKebabMenu = useCallback(() => setIsKebabMenuOpen(false), []);
+  const onKebabEdit = useCallback(() => runKebabAction("edit"), [runKebabAction]);
+  const onKebabSwap = useCallback(() => runKebabAction("swap"), [runKebabAction]);
+  const onKebabSuperset = useCallback(() => runKebabAction("superset"), [runKebabAction]);
+  const onKebabNotes = useCallback(() => runKebabAction("notes"), [runKebabAction]);
+  const onKebabRemove = useCallback(() => runKebabAction("remove"), [runKebabAction]);
+
+  const remScale = useRemScale();
+  const kebabMenuZIndex = Platform.OS === "web" && (isKebabMenuOpen || isSetMenuOpen) ? { zIndex: 50 } : undefined;
+
+  return (
+    <View
+      data-testid={`entry-${StringUtils_dashcase(exercise.name)}`}
+      testID={`entry-${StringUtils_dashcase(exercise.name)}`}
+      className="pb-1"
+      style={kebabMenuZIndex}
+    >
+      <View className="px-4" style={kebabMenuZIndex}>
+        <View className="flex-row gap-2" style={kebabMenuZIndex}>
+          {/* personal-fork: exercise name 21px, equipment as a quiet ink-2 row with a chevron */}
+          <View className="flex-1 min-w-0 mt-1">
+            <Pressable
+              ref={titleRef}
+              className="flex-row items-center"
+              data-testid="exercise-name"
+              testID="exercise-name"
+              onPress={onPressExerciseStats}
+              onLayout={onTitleLayout}
+            >
+              <Text
+                className="flex-shrink pr-1 font-bold text-text-primary"
+                style={{ fontSize: 21 * remScale, lineHeight: 27 * remScale }}
+              >
+                {ExerciseDisplayName_withEquipment(exercise, props.settings)}
+              </Text>
+            </Pressable>
+            <View data-testid="exercise-equipment" className="flex-row flex-wrap items-center">
+              <Pressable
+                className="flex-row items-center"
+                style={{ minHeight: 32 }}
+                data-testid="exercise-equipment-picker"
+                testID="exercise-equipment-picker"
+                accessibilityRole="button"
+                onPress={openEquipmentModal}
+              >
+                <Text className="text-sm text-text-secondary">Equipment:</Text>
+                <Text className="text-sm text-text-secondary">{currentEquipmentName || "None"}</Text>
+                <View className="ml-0.5">
+                  <IconArrowRight color={Tailwind_semantic().icon.neutralsubtle} />
+                </View>
+              </Pressable>
+            </View>
+            {supersetExercise && (
+              <View
+                data-testid="exercise-superset"
+                testID="exercise-superset"
+                className="flex-row flex-wrap items-center"
+              >
+                <Text className="text-sm text-text-secondary">Supersets with: </Text>
+                <LinkButton
+                  name="exercise-superset-picker"
+                  data-testid="exercise-superset-picker"
+                  testID="exercise-superset-picker"
+                  onClick={openSupersetPicker}
+                  className="text-sm"
+                >
+                  {ExerciseDisplayName_full(supersetExercise, props.settings)}
+                </LinkButton>
+              </View>
+            )}
+            {!!currentEquipmentNotes && (
+              <View className="mt-1">
+                <Markdown value={currentEquipmentNotes} />
+              </View>
+            )}
+            {((programExercise && ProgramExercise_doesUse1RM(programExercise)) || Progress_doesUse1RM(props.entry)) && (
+              <View data-testid="exercise-rm1" testID="exercise-rm1" className="flex-row flex-wrap items-center">
+                <Text noTranslate={true} className="text-sm text-text-secondary">
+                  {PersonalFormat_label("1RM:")}
+                </Text>
+                <LinkButton
+                  name="exercise-rm1-picker"
+                  data-testid="exercise-rm1-picker"
+                  onClick={openRm1Modal}
+                  className="text-sm"
+                >
+                  {Weight_print(onerm)}
+                </LinkButton>
+              </View>
+            )}
+          </View>
+          <View className="relative">
+            <Pressable
+              data-testid="exercise-options"
+              testID="exercise-options"
+              className="items-center justify-center"
+              style={{ width: 44, height: 44, marginRight: -12 }}
+              accessibilityRole="button"
+              accessibilityLabel={Translate_text("Exercise options")}
+              onPress={onKebabPress}
+              hitSlop={8}
+            >
+              <IconKebab color={Tailwind_semantic().icon.neutral} />
+            </Pressable>
+            {Platform.OS === "web" && isKebabMenuOpen && (
+              <DropdownMenu rightOffset="2rem" onClose={onCloseKebabMenu} maxWidth="20rem">
+                {programExercise && programExerciseId && (
+                  <DropdownMenuItem
+                    isTop={true}
+                    data-testid="exercise-edit-mode"
+                    testID="exercise-edit-mode"
+                    onClick={onKebabEdit}
+                  >
+                    <View className="flex-row items-center gap-2">
+                      <View>
+                        <IconEdit2 size={22} />
+                      </View>
+                      <Text className="whitespace-nowrap">Edit Program Exercise</Text>
+                    </View>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  data-testid="exercise-swap"
+                  testID="exercise-swap"
+                  isTop={!programExercise || !programExerciseId}
+                  onClick={onKebabSwap}
+                >
+                  <View className="flex-row items-center gap-2">
+                    <IconSwap size={18} />
+                    <Text className="whitespace-nowrap">Swap Exercise</Text>
+                  </View>
+                </DropdownMenuItem>
+                <DropdownMenuItem data-testid="exercise-superset" testID="exercise-superset" onClick={onKebabSuperset}>
+                  <View className="flex-row items-center" style={{ gap: 8 }}>
+                    <IconReorder size={18} />
+                    <Text className="whitespace-nowrap">Edit Superset</Text>
+                  </View>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="exercise-notes-toggle"
+                  testID="exercise-notes-toggle"
+                  onClick={onKebabNotes}
+                >
+                  <View className="flex-row items-center" style={{ gap: 8 }}>
+                    <IconNotebook size={18} />
+                    <Text className="whitespace-nowrap">
+                      {showExerciseNotes ? "Hide Exercise Notes" : "Show Exercise Notes"}
+                    </Text>
+                  </View>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="edit-exercise-kebab-remove-exercise"
+                  testID="edit-exercise-kebab-remove-exercise"
+                  onClick={onKebabRemove}
+                >
+                  <View className="flex-row items-center" style={{ gap: 8 }}>
+                    <IconTrash width={15} height={18} />
+                    <Text className="whitespace-nowrap">Remove Exercise</Text>
+                  </View>
+                </DropdownMenuItem>
+              </DropdownMenu>
+            )}
+          </View>
+        </View>
+        {!!exerciseNotes && (
+          <View className="mt-1">
+            {!!exerciseNotes && !!description && <GroupHeader name="Exercise Notes" />}
+            <Markdown value={exerciseNotes} />
+          </View>
+        )}
+        {!!description && (
+          <View className="mt-1">
+            {!!exerciseNotes && !!description && <GroupHeader name="Program Exercise Description" />}
+            <Markdown value={description} />
+          </View>
+        )}
+        {!!lastNote && !!timestamp && (
+          <View>
+            <GroupHeader
+              name={Translate_format("Previous Note (from {date})", { date: DateUtils_format(timestamp) })}
+            />
+            <View className="pl-1 mb-1 border-purplev3-300" style={{ borderLeftWidth: 4 }}>
+              {/* An Android text selection keeps its page on screen, so the exercise pager snaps back to it */}
+              <Text className={Platform.OS === "web" ? "text-sm select-text" : "text-sm"}>{lastNote}</Text>
+            </View>
+          </View>
+        )}
+        {showExerciseNotes && (
+          <View>
+            <TextareaAutogrow
+              debounceMs={1000}
+              data-testid="exercise-notes-input"
+              testID="exercise-notes-input"
+              id="exercise-notes"
+              maxLength={4095}
+              name="exercise-notes"
+              placeholder={Translate_text("Add workout notes for this exercise here...")}
+              value={props.entry.notes}
+              onChangeText={onChangeNotes}
+              className="mt-1"
+            />
+          </View>
+        )}
+      </View>
+      <View className="mt-2">
+        <WorkoutExerciseAllSets
+          stats={props.stats}
+          isPlayground={false}
+          helps={props.helps}
+          expansion={expansion}
+          isCurrentProgress={props.isCurrentProgress}
+          day={props.day}
+          program={props.program}
+          userPromptedStateVars={
+            programExercise ? props.progressUserPromptedStateVars?.[programExercise.key] : undefined
+          }
+          programExercise={programExercise}
+          entryIndex={props.entryIndex}
+          onTargetClick={onTargetClick}
+          otherStates={props.otherStates}
+          lastSets={lastHistoryEntry?.sets}
+          lastWarmupSets={props.prevData?.lastWarmupEntry?.warmupSets}
+          lbSets={lbSets}
+          lbWarmupSets={lbWarmupSets}
+          exerciseType={exerciseType}
+          entry={props.entry}
+          settings={props.settings}
+          dispatch={props.dispatch}
+          subscription={props.subscription}
+          onUpdateProgramWeight={props.onUpdateProgramWeight}
+        />
+      </View>
+    </View>
+  );
+}
+
+export const WorkoutExerciseCard = memo(WorkoutExerciseCardInner);

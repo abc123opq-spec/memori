@@ -1,0 +1,937 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { Reducer } from "react";
+import {
+  Program_getProgram,
+  Program_nextHistoryRecord,
+  Program_evaluate,
+  Program_getDayExerciseKeys,
+} from "../models/program";
+import { Dialog_alert } from "../utils/dialog";
+import {
+  Progress_getProgress,
+  Progress_getProgressById,
+  Progress_completeSetAction,
+  Progress_changeAmrapAction,
+  Progress_checkSetTimer,
+  Progress_closeTimedSet,
+  Progress_startSetTimerWork,
+  Progress_setProgress,
+  Progress_finishWorkout,
+  Progress_isCurrent,
+  Progress_stop,
+  Progress_showUpdateDate,
+  Progress_changeDate,
+  Progress_stopTimer,
+  Progress_getCurrentProgress,
+  Progress_daySetCounts,
+  Progress_applyProgramDay,
+  Progress_runInitialUpdateScripts,
+  Progress_isSetTimerCheckDue,
+} from "../models/progress";
+import {
+  Storage_get,
+  Storage_getDefault,
+  Storage_getHistoryRecord,
+  Storage_isChanged,
+  Storage_updateVersions,
+} from "../models/storage";
+import { IScreen, IScreenParams } from "../models/screen";
+import { ILensRecordingPayload, lb } from "lens-shmens";
+import { buildState, IEnv, ILocalStorage, INotification, IState, IStateErrors, updateState } from "../models/state";
+import { UidFactory_generateUid } from "../utils/generator";
+import {
+  IStorage,
+  IWeight,
+  IProgressMode,
+  ISettings,
+  IHistoryRecord,
+  IPercentage,
+  IProgramState,
+  ISubscription,
+  IStats,
+} from "../types";
+import { IndexedDBUtils_get } from "../utils/indexeddb";
+import { Persistence } from "../utils/persistence";
+import { basicBeginnerProgram } from "../programs/basicBeginnerProgram";
+import { AdminDebug_isDebugAccountId } from "../models/adminDebug";
+import { LogUtils_log } from "../utils/log";
+import { Service } from "../api/service";
+import { unrunMigrations } from "../migrations/runner";
+import {
+  ObjectUtils_isEqual,
+  ObjectUtils_changedKeys,
+  ObjectUtils_isNotEmpty,
+  ObjectUtils_keys,
+} from "../utils/object";
+import { UrlUtils_build } from "../utils/url";
+import { HostConfig_baseUrl } from "../utils/webPath";
+import { DateUtils_formatHHMMSS } from "../utils/date";
+import { IReducerOnAction } from "./types";
+import { Thunk_sync2, Thunk_checkSetTimer, Thunk_saveWorkoutToHealth } from "./thunks";
+import { PushRegistration_identityChanged } from "../utils/pushRegistration";
+import { CollectionUtils_uniqBy, CollectionUtils_compact } from "../utils/collection";
+import { Subscriptions_cleanupOutdatedGooglePurchaseTokens } from "../utils/subscriptions";
+import { UndoingFlag_set } from "../utils/undoingFlag";
+import { Diagnostics_getLastActions, Diagnostics_recordAction, Diagnostics_setLastState } from "../utils/diagnostics";
+import { Exercise_toKey } from "../models/exercise";
+import { INativeEffect, NativeEffects_apply, NativeEffects_withoutWatchWorkout } from "../models/nativeEffects";
+import { History_resumeWorkout } from "../models/history";
+import { NotificationPrefs_reconcile, NotificationPrefs_reminder } from "../models/notificationPrefs";
+import { IPlannerProgramExercise } from "../pages/planner/models/types";
+import { IByExercise } from "../pages/planner/plannerEvaluator";
+import { History_deleteRecords } from "../models/history";
+import { WorkoutOutcome_add, WorkoutOutcome_healthSaves } from "../models/workoutOutcome";
+import { lg } from "../utils/posthog";
+import { Equipment_getCurrentGym, Equipment_getEquipmentIdForExerciseType } from "../models/equipment";
+import { Stats_getCurrentMovingAverageBodyweight } from "../models/stats";
+import { Weight_build, Weight_eq } from "../models/weight";
+import { PerfTracker_recordEvent, PerfTracker_getSessionId } from "../utils/perfTracker";
+import { PerfEnabled_isEnabled, PerfEnabled_tier2 } from "../utils/perfEnabled";
+import { PerfProbe_onAction } from "../utils/perfSetCompleteProbe";
+import { HermesProfile_captureOnce } from "../utils/hermesProfile";
+import { PerfScorecard_recordAction } from "../utils/perfScorecard";
+import { EquipmentUnits_follow } from "../models/equipmentUnits";
+import { SocialState_forAccount } from "../models/socialState";
+
+declare let __COMMIT_HASH__: string;
+
+const isLoggingEnabled =
+  typeof window !== "undefined" && window?.location
+    ? !!UrlUtils_build(window.location.href).searchParams.get("log")
+    : false;
+
+export async function getIdbKey(userId?: string, isAdmin?: boolean): Promise<string> {
+  const currentAccount = await IndexedDBUtils_get("current_account");
+  if (currentAccount) {
+    return `liftosaur_${currentAccount}`;
+  } else {
+    return userId != null && isAdmin ? `liftosaur_${userId}` : "liftosaur";
+  }
+}
+
+declare let __HOST__: string;
+
+export async function getInitialState(
+  client: Window["fetch"],
+  args: { url?: URL; rawStorage?: string; localStorage?: ILocalStorage; storage?: IStorage; deviceId: string }
+): Promise<IState> {
+  const url =
+    args?.url ||
+    UrlUtils_build(typeof document !== "undefined" ? document.location.href : HostConfig_baseUrl("http://localhost/"));
+  const messageerror = url.searchParams.get("messageerror") || undefined;
+  const messagesuccess = url.searchParams.get("messagesuccess") || undefined;
+  // personal-fork: no server to sync with
+  const nosync = true;
+  let storage: ILocalStorage | undefined;
+  if (args?.storage) {
+    storage = { storage: args.storage };
+  } else if (args?.localStorage != null) {
+    storage = args.localStorage;
+  } else if (args?.rawStorage != null) {
+    try {
+      storage = JSON.parse(args.rawStorage);
+    } catch (e) {
+      storage = undefined;
+    }
+  }
+  const notification: INotification | undefined =
+    messageerror || messagesuccess
+      ? {
+          type: messageerror ? ("error" as const) : ("success" as const),
+          content: messageerror || messagesuccess || "",
+        }
+      : undefined;
+
+  const deviceId = args.deviceId;
+  if (storage != null && storage.storage != null) {
+    const hasUnrunMigrations = unrunMigrations(storage.storage).length > 0;
+    const maybeStorage = Storage_get(storage.storage, true);
+    let finalStorage: IStorage;
+    const errors: IStateErrors = {};
+    if (maybeStorage.success) {
+      finalStorage = maybeStorage.data;
+    } else {
+      const service = new Service(client);
+      const userid = (storage.storage?.tempUserId || `missing-${UidFactory_generateUid(8)}`) as string;
+      const serverStorage = await service.getStorage(userid, undefined, undefined);
+      const maybeServerStorage = Storage_get(serverStorage.storage, false);
+      if (maybeServerStorage.success) {
+        finalStorage = maybeServerStorage.data;
+      } else {
+        errors.corruptedstorage = {
+          userid,
+          backup: await service.postDebug(userid, JSON.stringify(storage.storage), { local: "true" }),
+          confirmed: false,
+          local: true,
+        };
+        finalStorage = Storage_getDefault();
+      }
+    }
+
+    const lastSynced = hasUnrunMigrations ? undefined : storage.lastSynced;
+
+    // Handle migration from old localStorage format where progress was stored separately
+    // Now progress is stored in storage.progress
+    const oldProgress = (storage as { progress?: IHistoryRecord }).progress;
+    if (oldProgress != null && (finalStorage.progress == null || finalStorage.progress.length === 0)) {
+      const migratedProgress = Storage_getHistoryRecord(oldProgress as unknown as Record<string, unknown>, true);
+      if (migratedProgress.success) {
+        finalStorage = { ...finalStorage, progress: [{ ...migratedProgress.data, vtype: "progress" }] };
+      }
+    }
+
+    return {
+      storage: finalStorage,
+      lastSynced,
+      progress: {},
+      notification,
+      loading: { items: {} },
+      programs: [basicBeginnerProgram],
+      programsIndex: [],
+      programGuides: {},
+      revisions: {},
+      user: undefined,
+      freshMigrations: maybeStorage.success && hasUnrunMigrations,
+      errors,
+      nosync: nosync || AdminDebug_isDebugAccountId(finalStorage.tempUserId),
+      deviceId,
+      editProgramStates: {},
+    };
+  }
+  const newState = buildState({
+    notification,
+    nosync,
+    deviceId,
+  });
+  LogUtils_log(newState.storage.tempUserId, "ls-initialize-user", {}, []);
+  return newState;
+}
+
+export type IChangeDate = {
+  type: "ChangeDate";
+  id: number;
+  date: string;
+  time: number;
+};
+
+export type IConfirmDate = {
+  type: "ConfirmDate";
+  id: number;
+  date?: string;
+  time?: number;
+};
+
+export type ILoginAction = {
+  type: "Login";
+  email: string;
+  userId: string;
+};
+
+export type ILogoutAction = {
+  type: "Logout";
+};
+
+export type IPushScreen<T extends IScreen> = {
+  type: "PushScreen";
+  screen: T;
+  params?: IScreenParams<T>;
+  shouldResetStack?: boolean;
+};
+
+export type IPullScreen = {
+  type: "PullScreen";
+};
+
+export type ICancelProgress = {
+  type: "CancelProgress";
+};
+
+export type IDeleteProgress = {
+  type: "DeleteProgress";
+  id: number;
+};
+
+export type ICompleteSetAction = {
+  type: "CompleteSetAction";
+  entryIndex: number;
+  setIndex: number;
+  programExercise?: IPlannerProgramExercise;
+  otherStates?: IByExercise<IProgramState>;
+  isPlayground: boolean;
+  mode: IProgressMode;
+  forceUpdateEntryIndex: boolean;
+  isExternal: boolean;
+  // Set when completing a timed set from its running clock: the elapsed seconds to record (the model
+  // otherwise derives it from setTimerModal.startedAt), and whether to keep the clock running afterwards.
+  recordedSeconds?: number;
+  keepSetTimerRunning?: boolean;
+};
+
+// Polled by any surface (banner tick, rest-timer tick, live activity, watch) to drive time-based set
+// timer transitions: auto-fire when the work timer hits its target, or auto-advance after rest expires.
+// No-op (returns the same progress) when nothing is due.
+export type ICheckSetTimerAction = {
+  type: "CheckSetTimerAction";
+  programExercise?: IPlannerProgramExercise;
+  otherStates?: IByExercise<IProgramState>;
+  now?: number;
+  // When a playground timer auto-fires at its target, the completion must stay playground-scoped — otherwise
+  // it resumes/updates the real native workout (playground records have id 0 and read as "current").
+  isPlayground?: boolean;
+};
+
+export type IStartSetTimerWorkAction = {
+  type: "StartSetTimerWorkAction";
+  // A queued native tap can arrive long after the fact, and stamping it here would start the work clock
+  // late and silently shorten the set.
+  startedAt?: number;
+};
+
+// Discard the set timer banner (no recording); starts the deferred rest if the set was already logged.
+export type ICloseSetTimerAction = {
+  type: "CloseSetTimerAction";
+  // Playground has no rest timers, so closing a logged set-timer there must not start a deferred rest.
+  isPlayground?: boolean;
+};
+
+export type IFinishProgramDayAction = {
+  type: "FinishProgramDayAction";
+  id: number;
+  startTime: number;
+  healthSync: boolean;
+};
+
+export type IStartProgramDayAction = {
+  type: "StartProgramDayAction";
+  programId?: string;
+};
+
+export type IChangeAMRAPAction = {
+  type: "ChangeAMRAPAction";
+  setIndex: number;
+  isPlayground: boolean;
+  entryIndex: number;
+  amrapValue?: number;
+  amrapLeftValue?: number;
+  rpeValue?: number;
+  weightValue?: IWeight;
+  isAmrap?: boolean;
+  logRpe?: boolean;
+  askWeight?: boolean;
+  programExercise?: IPlannerProgramExercise;
+  otherStates?: IByExercise<IProgramState>;
+  userVars?: Record<string, number | IWeight | IPercentage>;
+};
+
+export type IUpdateSettingsAction = {
+  type: "UpdateSettings";
+  lensRecording: ILensRecordingPayload<ISettings>;
+  desc: string;
+};
+
+export type IUpdateStateAction = {
+  type: "UpdateState";
+  lensRecording: ILensRecordingPayload<IState>[];
+  desc: string;
+};
+
+export type IReplaceStateAction = {
+  type: "ReplaceState";
+  state: IState;
+};
+
+export type IEditHistoryRecordAction = {
+  type: "EditHistoryRecord";
+  historyRecord: IHistoryRecord;
+};
+
+export type IStopTimer = {
+  type: "StopTimer";
+};
+
+export type IResumeWorkoutAction = {
+  type: "ResumeWorkoutAction";
+  isPlayground: boolean;
+  hasSubscription: boolean;
+};
+
+export type IApplyProgramChangesToProgress = {
+  type: "ApplyProgramChangesToProgress";
+  programExerciseIds?: string[];
+  // Set only where the program itself changed, which is the only place that can know what the day looked like
+  // before. Without it the pass is value-only — see `Progress_applyProgramDay`.
+  oldDayKeys?: string[];
+  oldSetCounts?: Partial<Record<string, number>>;
+};
+
+export type IUpdateProgressAction = {
+  type: "UpdateProgress";
+  lensRecordings: ILensRecordingPayload<IHistoryRecord>[];
+  desc: string;
+};
+
+export type ICardsAction =
+  | ICompleteSetAction
+  | IChangeAMRAPAction
+  | IUpdateProgressAction
+  | ICheckSetTimerAction
+  | ICloseSetTimerAction
+  | IStartSetTimerWorkAction;
+
+export type IAction =
+  | ICardsAction
+  | IStartProgramDayAction
+  | IFinishProgramDayAction
+  | IEditHistoryRecordAction
+  | ICancelProgress
+  | IDeleteProgress
+  | IPushScreen<any>
+  | IPullScreen
+  | IChangeDate
+  | IConfirmDate
+  | ILoginAction
+  | ILogoutAction
+  | IStopTimer
+  | IResumeWorkoutAction
+  | IUpdateStateAction
+  | IReplaceStateAction
+  | IUpdateSettingsAction
+  | IApplyProgramChangesToProgress;
+
+function isExternalStorageMerge(action: unknown): boolean {
+  return (
+    typeof action === "object" &&
+    action != null &&
+    "type" in action &&
+    action.type === "UpdateState" &&
+    "desc" in action &&
+    (action.desc === "Merge synced storage" ||
+      action.desc === "Merge watch storage" ||
+      action.desc === "Reload storage from disk")
+  );
+}
+
+export function defaultOnActions(env: IEnv): IReducerOnAction[] {
+  return [
+    (dispatch, action, oldState, newState) => {
+      const isFinishDayAction = "type" in action && action.type === "FinishProgramDayAction";
+      if (!isExternalStorageMerge(action) && Storage_isChanged(oldState.storage, newState.storage)) {
+        dispatch(Thunk_sync2({ log: isFinishDayAction }));
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      const units = newState.storage.settings.units;
+      if (oldState.storage.settings.units === units) {
+        return;
+      }
+      const gyms = newState.storage.settings.gyms;
+      const converted = EquipmentUnits_follow(gyms, units);
+      if (converted !== gyms) {
+        updateState(
+          dispatch,
+          [lb<IState>().p("storage").p("settings").p("gyms").record(converted)],
+          "Convert equipment to app units"
+        );
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if (oldState.storage.settings === newState.storage.settings) {
+        return;
+      }
+      const effects = NotificationPrefs_reconcile(
+        oldState.storage.settings,
+        newState.storage.settings,
+        Progress_getCurrentProgress(newState)
+      );
+      if (effects.length > 0) {
+        NativeEffects_apply(env, effects);
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      const identity = PushRegistration_identityChanged(oldState, newState);
+      if (identity !== false) {
+        env.push?.setIdentity(identity);
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      // useThunkReducer re-runs these observers when a thunk resolves, so without skipping thunks and
+      // CheckSetTimerAction, Thunk_checkSetTimer's own dispatch retriggers this observer forever.
+      if (typeof action === "function" || action.type === "CheckSetTimerAction") {
+        return;
+      }
+      const progress = Progress_getCurrentProgress(newState);
+      if (progress != null && Progress_isSetTimerCheckDue(progress, Date.now())) {
+        dispatch(Thunk_checkSetTimer());
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if (oldState.storage.programs !== newState.storage.programs) {
+        const newProgramIds = newState.storage.programs.map((p) => p.id);
+        if (Array.from(new Set(newProgramIds)).length !== newProgramIds.length) {
+          lg("program-duplicate-ids", {
+            programIds: JSON.stringify(newProgramIds),
+            lastReducerActions: JSON.stringify(
+              Diagnostics_getLastActions().map((a) => [a.type, "desc" in a ? a.desc : undefined])
+            ),
+          });
+          const newPrograms = CollectionUtils_uniqBy(newState.storage.programs, "id");
+          updateState(
+            dispatch,
+            [lb<IState>().p("storage").pi("programs").record(newPrograms)],
+            "Remove duplicate programs"
+          );
+        }
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      // The ongoing workout, not whichever record is on screen — `ApplyProgramChangesToProgress` only ever
+      // touches that one, and a past workout open for editing has its own program and day. Reading the viewed
+      // record here would diff the wrong day and hand those keys to the live workout.
+      const progress = Progress_getCurrentProgress(newState);
+      if (progress != null) {
+        const oldProgram = Program_getProgram(oldState, progress.programId);
+        const newProgram = Program_getProgram(newState, progress.programId);
+        if (oldProgram != null && newProgram != null && !ObjectUtils_isEqual(oldProgram, newProgram)) {
+          // Exercises can only be added, removed or reordered by the planner moving, and evaluating the old
+          // program to find out what the day held isn't free — so only pay for it when the planner differs.
+          // Evaluated with the *new* settings, so the keys are comparable to the ones the handler derives.
+          const isPlannerSame =
+            oldProgram.planner != null && newProgram.planner != null
+              ? ObjectUtils_isEqual(oldProgram.planner, newProgram.planner)
+              : oldProgram.planner === newProgram.planner;
+          const oldEvaluated = isPlannerSame ? undefined : Program_evaluate(oldProgram, newState.storage.settings);
+          const oldDayKeys = oldEvaluated ? Program_getDayExerciseKeys(oldEvaluated, progress.day) : undefined;
+          const oldSetCounts = oldEvaluated ? Progress_daySetCounts(oldEvaluated, progress.day) : undefined;
+          dispatch({ type: "ApplyProgramChangesToProgress", oldDayKeys, oldSetCounts });
+        }
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if (
+        oldState.storage.stats !== newState.storage.stats ||
+        ((newState.storage.stats.weight.weight ?? []).length > 0 && newState.storage.settings.currentBodyweight == null)
+      ) {
+        const oldBodyweight =
+          Stats_getCurrentMovingAverageBodyweight(oldState.storage.stats, oldState.storage.settings) ??
+          Weight_build(0, oldState.storage.settings.units);
+        const newBodyweight =
+          Stats_getCurrentMovingAverageBodyweight(newState.storage.stats, newState.storage.settings) ??
+          Weight_build(0, newState.storage.settings.units);
+        if (!Weight_eq(oldBodyweight, newBodyweight)) {
+          updateState(
+            dispatch,
+            [lb<IState>().p("storage").p("settings").pi("currentBodyweight").record(newBodyweight)],
+            "Update current bodyweight"
+          );
+          dispatch({ type: "ApplyProgramChangesToProgress" });
+        }
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      const progress = Progress_getProgress(newState);
+      if (progress != null) {
+        const oldExerciseData = oldState.storage.settings.exerciseData;
+        const newExerciseData = newState.storage.settings.exerciseData;
+        if (
+          oldExerciseData != null &&
+          newExerciseData != null &&
+          !ObjectUtils_isEqual(oldExerciseData, newExerciseData)
+        ) {
+          const changes = ObjectUtils_changedKeys(oldExerciseData, newExerciseData);
+          if (ObjectUtils_isNotEmpty(changes)) {
+            const changedExercises = ObjectUtils_keys(changes);
+            const affectedEntries = progress.entries.filter((entry) => {
+              const key = Exercise_toKey(entry.exercise);
+              return changedExercises.indexOf(key) !== -1;
+            });
+            if (affectedEntries.length > 0) {
+              dispatch({
+                type: "ApplyProgramChangesToProgress",
+                programExerciseIds: CollectionUtils_compact(affectedEntries.map((e) => e.programExerciseId)),
+              });
+            }
+          }
+        }
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      const progress = Progress_getProgress(newState);
+      if (progress != null) {
+        const oldEquipment = Equipment_getCurrentGym(oldState.storage.settings).equipment;
+        const newEquipment = Equipment_getCurrentGym(newState.storage.settings).equipment;
+        if (oldEquipment != null && newEquipment != null && !ObjectUtils_isEqual(oldEquipment, newEquipment)) {
+          const changedEquipmentIds = ObjectUtils_keys(ObjectUtils_changedKeys(oldEquipment, newEquipment));
+          const settings = newState.storage.settings;
+          const affectedEntries = progress.entries.filter((entry) => {
+            const equipmentId = Equipment_getEquipmentIdForExerciseType(settings, entry.exercise);
+            return equipmentId != null && changedEquipmentIds.indexOf(equipmentId) !== -1;
+          });
+          if (affectedEntries.length > 0) {
+            dispatch({
+              type: "ApplyProgramChangesToProgress",
+              programExerciseIds: CollectionUtils_compact(affectedEntries.map((e) => e.programExerciseId)),
+            });
+          }
+        }
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if (!ObjectUtils_isEqual(oldState.storage.subscription.google, newState.storage.subscription.google)) {
+        const userId = newState.user?.id || newState.storage.tempUserId;
+        Subscriptions_cleanupOutdatedGooglePurchaseTokens(dispatch, userId, env.service, newState.storage.subscription);
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if ("type" in action && action.type === "UpdateState" && action.desc === "stop-is-undoing") {
+        setTimeout(() => {
+          UndoingFlag_set(false);
+        }, 200);
+      }
+    },
+    (dispatch, action, oldState, newState) => {
+      if (oldState.storage.workoutOutcomes === newState.storage.workoutOutcomes || typeof action === "function") {
+        return;
+      }
+      const isOwnFinish = action.type === "FinishProgramDayAction";
+      const isMerge =
+        action.type === "UpdateState" &&
+        (action.desc === "Merge watch storage" || action.desc === "Merge synced storage");
+      if (!isOwnFinish && !isMerge) {
+        return;
+      }
+      const payloads = WorkoutOutcome_healthSaves(
+        oldState.storage.workoutOutcomes,
+        newState.storage.workoutOutcomes,
+        newState.storage.history,
+        Date.now()
+      );
+      for (const payload of payloads) {
+        dispatch(Thunk_saveWorkoutToHealth({ ...payload, source: isOwnFinish ? "finish" : "merge" }));
+      }
+    },
+  ];
+}
+
+export const reducerWrapper =
+  (
+    storeToLocalStorage: boolean,
+    persistence: Persistence,
+    applyEffects: (effects: INativeEffect[]) => void
+  ): Reducer<IState, IAction> =>
+  (state, action) => {
+    Diagnostics_setLastState(state);
+    Diagnostics_recordAction({ ...action, time: DateUtils_formatHHMMSS(Date.now(), true) });
+    const perfOn = PerfEnabled_isEnabled();
+    const perfActionType = "type" in action ? action.type : "thunk";
+    const perfActionDesc = "type" in action && action.type === "UpdateState" ? action.desc : undefined;
+    const perfSyncStart = perfOn ? Date.now() : 0;
+    const effects: INativeEffect[] = [];
+    let newState = reducer(state, action, effects);
+    applyEffects(
+      AdminDebug_isDebugAccountId(newState.storage.tempUserId) ? NativeEffects_withoutWatchWorkout(effects) : effects
+    );
+    const isMergingStorage = isExternalStorageMerge(action);
+    const isStorageChanged = !isMergingStorage && Storage_isChanged(state.storage, newState.storage);
+    if (isStorageChanged) {
+      const oldHistoryLen = state.storage.history?.length ?? 0;
+      const newHistoryLen = newState.storage.history?.length ?? 0;
+      const actionDesc = "type" in action && action.type === "UpdateState" ? action.desc : action.type;
+      if (oldHistoryLen > 0 && newHistoryLen === 0) {
+        lg("ls-history-deletion-critical", {
+          oldLen: oldHistoryLen,
+          newLen: newHistoryLen,
+          action: actionDesc || "unknown",
+        });
+      } else if (oldHistoryLen - newHistoryLen > 5) {
+        lg("ls-history-deletion-warning", {
+          oldLen: oldHistoryLen,
+          newLen: newHistoryLen,
+          action: actionDesc || "unknown",
+        });
+      }
+      const versions = Storage_updateVersions(state.storage, newState.storage, state.deviceId);
+      newState = { ...newState, storage: { ...newState.storage, _versions: versions } };
+    }
+
+    if (typeof window !== "undefined") {
+      window.tempUserId = newState.storage.tempUserId;
+      (window as any).state = newState;
+      if (storeToLocalStorage && newState.errors.corruptedstorage == null) {
+        persistence.scheduleSave(newState.user?.id || newState.storage.tempUserId, {
+          storage: newState.storage,
+          lastSynced: newState.lastSynced,
+        });
+      }
+    }
+
+    if (perfOn) {
+      const perfDurationMs = Date.now() - perfSyncStart;
+      PerfScorecard_recordAction(perfActionDesc ?? perfActionType, perfDurationMs);
+      if (
+        perfActionType === "CompleteSetAction" ||
+        perfActionType === "ChangeAMRAPAction" ||
+        perfActionType === "UpdateProgress"
+      ) {
+        PerfProbe_onAction(perfActionDesc ?? perfActionType, perfDurationMs);
+      }
+      if (perfActionType === "CompleteSetAction") {
+        HermesProfile_captureOnce("complete-set");
+      }
+      if (PerfEnabled_tier2()) {
+        PerfTracker_recordEvent({
+          type: "action",
+          session: PerfTracker_getSessionId(),
+          action: perfActionType,
+          desc: perfActionDesc,
+          duration_ms: perfDurationMs,
+          ts: perfSyncStart,
+        });
+      }
+    }
+    return newState;
+  };
+
+export function buildCardsReducer(
+  effects: INativeEffect[],
+  settings: ISettings,
+  stats: IStats,
+  subscription?: ISubscription
+): Reducer<IHistoryRecord, ICardsAction> {
+  return (progress, action): IHistoryRecord => {
+    switch (action.type) {
+      case "CompleteSetAction": {
+        const newProgress = Progress_completeSetAction(effects, settings, stats, progress, action, subscription);
+        return newProgress;
+      }
+      case "ChangeAMRAPAction": {
+        const newProgress = Progress_changeAmrapAction(effects, settings, stats, progress, action, subscription);
+        return newProgress;
+      }
+      case "CheckSetTimerAction": {
+        return Progress_checkSetTimer(
+          effects,
+          settings,
+          stats,
+          progress,
+          subscription,
+          action.programExercise,
+          action.otherStates,
+          action.now,
+          action.isPlayground
+        );
+      }
+      case "CloseSetTimerAction": {
+        return Progress_closeTimedSet(effects, progress, settings, subscription, action.isPlayground);
+      }
+      case "StartSetTimerWorkAction": {
+        return Progress_startSetTimerWork(progress, action.startedAt ?? Date.now());
+      }
+      case "UpdateProgress": {
+        return action.lensRecordings.reduce((memo, recording) => recording.fn(memo), progress);
+      }
+    }
+  };
+}
+
+export type IEffectfulReducer = (state: IState, action: IAction, effects: INativeEffect[]) => IState;
+
+export const reducer: IEffectfulReducer = (state, action, effects): IState => {
+  if (
+    action.type === "CompleteSetAction" ||
+    action.type === "ChangeAMRAPAction" ||
+    action.type === "CheckSetTimerAction" ||
+    action.type === "CloseSetTimerAction" ||
+    action.type === "StartSetTimerWorkAction" ||
+    action.type === "UpdateProgress"
+  ) {
+    const progress = Progress_getProgress(state);
+    if (progress == null) {
+      return state;
+    }
+    return Progress_setProgress(
+      state,
+      buildCardsReducer(
+        effects,
+        state.storage.settings,
+        state.storage.stats,
+        state.storage.subscription
+      )(progress, action)
+    );
+  } else if (action.type === "StartProgramDayAction") {
+    const progress = Progress_getProgress(state);
+    if (progress != null) {
+      return state;
+    } else if (state.storage.currentProgramId != null) {
+      const program = Program_getProgram(state, action.programId || state.storage.currentProgramId);
+      if (program != null) {
+        const newProgress = Program_nextHistoryRecord(program, state.storage.settings, state.storage.stats);
+        return {
+          ...state,
+          storage: { ...state.storage, progress: [newProgress] },
+        };
+      } else {
+        Dialog_alert("No currently selected program");
+        return state;
+      }
+    } else {
+      return state;
+    }
+  } else if (action.type === "EditHistoryRecord") {
+    return {
+      ...state,
+      progress: { ...state.progress, [action.historyRecord.id]: { ...action.historyRecord, ui: {} } },
+    };
+  } else if (action.type === "FinishProgramDayAction") {
+    const progress = Progress_getProgressById(state, action.id);
+    if (progress == null || progress.startTime !== action.startTime) {
+      return state;
+    }
+    const newStorage = Progress_finishWorkout(effects, state.storage, progress, action.healthSync);
+    return {
+      ...state,
+      storage: newStorage,
+      progress: Progress_isCurrent(progress) ? state.progress : Progress_stop(state.progress, progress.id),
+    };
+  } else if (action.type === "ChangeDate") {
+    const progress = Progress_getProgressById(state, action.id);
+    if (progress == null) {
+      return state;
+    }
+    return Progress_setProgress(state, Progress_showUpdateDate(progress, action.date, action.time));
+  } else if (action.type === "ConfirmDate") {
+    const progress = Progress_getProgressById(state, action.id);
+    if (progress == null) {
+      return state;
+    }
+    return Progress_setProgress(state, Progress_changeDate(progress, action.date, action.time));
+  } else if (action.type === "CancelProgress") {
+    const progress = Progress_getProgress(state)!;
+    return {
+      ...state,
+      storage: Progress_isCurrent(progress) ? { ...state.storage, progress: [] } : state.storage,
+      progress: Progress_isCurrent(progress) ? state.progress : Progress_stop(state.progress, progress.id),
+    };
+  } else if (action.type === "DeleteProgress") {
+    const progress = Progress_getProgressById(state, action.id);
+    if (progress != null) {
+      if (Progress_isCurrent(progress)) {
+        effects.push({ type: "discardWorkout" });
+        return {
+          ...state,
+          storage: {
+            ...state.storage,
+            history: state.storage.history.filter((h) => h.id !== progress.id),
+            progress: [],
+            workoutOutcomes: WorkoutOutcome_add(state.storage.workoutOutcomes, {
+              id: progress.startTime,
+              outcome: "discard",
+              healthSync: false,
+              endTime: Date.now(),
+            }),
+          },
+        };
+      }
+      return {
+        ...state,
+        storage: History_deleteRecords(state.storage, [progress.id]),
+        progress: Progress_stop(state.progress, progress.id),
+      };
+    } else {
+      return state;
+    }
+  } else if (action.type === "PushScreen") {
+    return state;
+  } else if (action.type === "PullScreen") {
+    return state;
+  } else if (action.type === "Login") {
+    return {
+      ...state,
+      user: { email: action.email, id: action.userId },
+      storage: { ...state.storage, email: action.email },
+      social: SocialState_forAccount(state.social, action.userId),
+    };
+  } else if (action.type === "Logout") {
+    return {
+      ...state,
+      user: undefined,
+      storage: { ...state.storage, email: undefined },
+      social: SocialState_forAccount(state.social, undefined),
+    };
+  } else if (action.type === "StopTimer") {
+    const progress = Progress_getProgress(state);
+    if (progress != null) {
+      return Progress_setProgress(state, Progress_stopTimer(effects, progress));
+    } else {
+      return state;
+    }
+  } else if (action.type === "ResumeWorkoutAction") {
+    const progress = Progress_getCurrentProgress(state);
+    if (progress == null) {
+      return state;
+    }
+    const intervals = History_resumeWorkout(
+      effects,
+      progress,
+      action.isPlayground,
+      NotificationPrefs_reminder(state.storage.settings),
+      action.hasSubscription
+    );
+    return Progress_setProgress(state, { ...progress, intervals });
+  } else if (action.type === "UpdateSettings") {
+    if (isLoggingEnabled) {
+      console.log(`%c-------${action.desc ? ` ${action.desc}` : ""}`, "font-weight:bold");
+    }
+    return {
+      ...state,
+      storage: {
+        ...state.storage,
+        settings: action.lensRecording.fn(state.storage.settings),
+      },
+    };
+  } else if (action.type === "ReplaceState") {
+    return action.state;
+  } else if (action.type === "UpdateState") {
+    if (isLoggingEnabled) {
+      console.log(`%c-------${action.desc ? ` ${action.desc}` : ""}`, "font-weight:bold");
+    }
+    return action.lensRecording.reduce((memo, recording) => {
+      if (isLoggingEnabled) {
+        recording.log("state");
+      }
+      const newState = recording.fn(memo);
+      if (isLoggingEnabled && recording.type === "modify") {
+        console.log("New Value: ", recording.value.v);
+      }
+      return newState;
+    }, state);
+  } else if (action.type === "ApplyProgramChangesToProgress") {
+    const progress = Progress_getCurrentProgress(state);
+    if (progress != null) {
+      const program = Program_evaluate(Program_getProgram(state, progress.programId)!, state.storage.settings);
+      let newProgress = Progress_applyProgramDay(progress, program, progress.day, state.storage.settings, {
+        programExerciseIds: action.programExerciseIds,
+        oldDayKeys: action.oldDayKeys,
+        oldSetCounts: action.oldSetCounts,
+        stats: state.storage.stats,
+      });
+      newProgress = Progress_runInitialUpdateScripts(
+        newProgress,
+        action.programExerciseIds,
+        progress.day,
+        program,
+        state.storage.settings,
+        state.storage.stats,
+        progress
+      );
+
+      return {
+        ...state,
+        storage: { ...state.storage, progress: [newProgress] },
+      };
+    } else {
+      return state;
+    }
+  } else {
+    return state;
+  }
+};

@@ -1,0 +1,407 @@
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import { Endpoint, RouteHandler } from "yatro";
+import { IDI } from "../utils/di";
+import { OauthDao } from "../dao/oauthDao";
+import { UserDao } from "../dao/userDao";
+import { LogDao } from "../dao/logDao";
+import { McpClientSlug_connectAction } from "./mcpClientSlug";
+import { Utils_getEnv, Utils_isLocal } from "../utils";
+import * as Cookie from "cookie";
+import JWT from "jsonwebtoken";
+import * as crypto from "crypto";
+import { renderOauthConsentHtml } from "../oauthConsent";
+
+interface IPayload {
+  event: APIGatewayProxyEvent;
+  di: IDI;
+}
+
+// The signed consent token is what makes /oauth/authorize CSRF-safe: the code is
+// only minted by the POST, and the POST needs a token that can only be read out
+// of the GET's HTML (blocked cross-origin) and can't be forged. userId is bound
+// in so a logged-in attacker can't pre-mint a token and submit it inside a
+// victim's session.
+const CONSENT_TOKEN_TYPE = "oauth_consent";
+
+interface IConsentToken {
+  type: string;
+  userId: string;
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  state?: string;
+}
+
+// The consent token MUST NOT be signed with the raw cookie secret: a session
+// cookie is just JWT.sign({ userId }, cookieSecret), so a token signed with the
+// same key and carrying userId would validate as a live session (and vice
+// versa) - letting a leaked consent token be replayed as its own session. Derive
+// a distinct key so the two token types are cryptographically separate.
+async function getConsentSigningKey(di: IDI): Promise<string> {
+  const secret = await di.secrets.getCookieSecret();
+  return crypto.createHmac("sha256", secret).update("oauth-consent-v1").digest("hex");
+}
+
+// Consent page is the only framable content here; block embedding so a client
+// can't clickjack the Allow button.
+const antiFramingHeaders = {
+  "x-frame-options": "DENY",
+  "content-security-policy": "frame-ancestors 'none'",
+};
+
+function oauthJson(status: number, body: object, extraHeaders?: Record<string, string>): APIGatewayProxyResult {
+  return {
+    statusCode: status,
+    body: JSON.stringify(body),
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      ...extraHeaders,
+    },
+  };
+}
+
+function oauthError(status: number, error: string, description: string): APIGatewayProxyResult {
+  return oauthJson(status, { error, error_description: description });
+}
+
+function getBaseUrl(): string {
+  if (Utils_isLocal()) {
+    return "https://local.liftosaur.com:8080";
+  }
+  const env = Utils_getEnv();
+  return env === "dev" ? "https://stage.liftosaur.com" : "https://www.liftosaur.com";
+}
+
+async function getCurrentUserId(event: APIGatewayProxyEvent, di: IDI): Promise<string | undefined> {
+  const cookies = Cookie.parse(event.headers.Cookie || event.headers.cookie || "");
+  const userDao = new UserDao(di);
+  return userDao.getCurrentUserIdFromCookie(cookies);
+}
+
+// --- GET /.well-known/oauth-protected-resource ---
+
+export const getProtectedResourceEndpoint = Endpoint.build("/.well-known/oauth-protected-resource");
+// RFC 9728 puts the metadata for `/mcp` at this path. Kelivo rejects the root one; older clients only read the root.
+export const getProtectedResourceMcpEndpoint = Endpoint.build("/.well-known/oauth-protected-resource/mcp");
+export const getProtectedResourceHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getProtectedResourceEndpoint
+> = async ({ payload }) => {
+  const baseUrl = getBaseUrl();
+  return oauthJson(200, {
+    resource: `${baseUrl}/mcp`,
+    authorization_servers: [baseUrl],
+  });
+};
+
+// --- GET /.well-known/oauth-authorization-server ---
+
+export const getAuthServerMetadataEndpoint = Endpoint.build("/.well-known/oauth-authorization-server");
+export const getAuthServerMetadataHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getAuthServerMetadataEndpoint
+> = async ({ payload }) => {
+  const baseUrl = getBaseUrl();
+  return oauthJson(200, {
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/oauth/authorize`,
+    token_endpoint: `${baseUrl}/oauth/token`,
+    registration_endpoint: `${baseUrl}/oauth/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  });
+};
+
+// --- POST /oauth/register (Dynamic Client Registration) ---
+
+export const postOauthRegisterEndpoint = Endpoint.build("/oauth/register");
+export const postOauthRegisterHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postOauthRegisterEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  let body: Record<string, unknown>;
+  try {
+    const raw = event.body
+      ? event.isBase64Encoded
+        ? Buffer.from(event.body, "base64").toString("utf8")
+        : event.body
+      : "{}";
+    body = JSON.parse(raw);
+  } catch {
+    return oauthError(400, "invalid_request", "Invalid JSON body");
+  }
+
+  const redirectUris = body.redirect_uris as string[] | undefined;
+  if (!redirectUris || !Array.isArray(redirectUris) || redirectUris.length === 0) {
+    return oauthError(400, "invalid_request", "redirect_uris is required");
+  }
+
+  const clientName = (body.client_name as string) || "MCP Client";
+  const oauthDao = new OauthDao(di);
+  const client = await oauthDao.createClient(redirectUris, clientName);
+
+  return oauthJson(201, {
+    client_id: client.clientId,
+    client_name: client.clientName,
+    redirect_uris: client.redirectUris,
+  });
+};
+
+// --- GET /oauth/authorize ---
+
+export const getOauthAuthorizeEndpoint = Endpoint.build("/oauth/authorize", {
+  response_type: "string?",
+  client_id: "string?",
+  redirect_uri: "string?",
+  state: "string?",
+  code_challenge: "string?",
+  code_challenge_method: "string?",
+});
+export const getOauthAuthorizeHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getOauthAuthorizeEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+
+  if (params.response_type !== "code") {
+    return oauthError(400, "unsupported_response_type", "Only response_type=code is supported");
+  }
+  if (!params.client_id || !params.redirect_uri || !params.code_challenge) {
+    return oauthError(400, "invalid_request", "Missing required parameters");
+  }
+  if (params.code_challenge_method && params.code_challenge_method !== "S256") {
+    return oauthError(400, "invalid_request", "Only S256 code_challenge_method is supported");
+  }
+
+  const oauthDao = new OauthDao(di);
+  const client = await oauthDao.getClient(params.client_id);
+  if (!client) {
+    return oauthError(400, "invalid_client", "Unknown client_id");
+  }
+  if (!client.redirectUris.includes(params.redirect_uri)) {
+    return oauthError(400, "invalid_request", "redirect_uri not registered");
+  }
+
+  const userId = await getCurrentUserId(event, di);
+  if (!userId) {
+    const baseUrl = getBaseUrl();
+    const currentUrl = `${baseUrl}${event.path}?${new URLSearchParams(params as Record<string, string>).toString()}`;
+    return {
+      statusCode: 302,
+      body: "",
+      headers: { location: `${baseUrl}/login?url=${encodeURIComponent(currentUrl)}` },
+    };
+  }
+
+  // Don't mint the code here. Minting on GET is what let an attacker force a
+  // silent top-level navigation to /authorize and harvest the victim's code.
+  // Instead show a consent page whose Allow button POSTs a signed token back.
+  const consentPayload: IConsentToken = {
+    type: CONSENT_TOKEN_TYPE,
+    userId,
+    clientId: params.client_id,
+    redirectUri: params.redirect_uri,
+    codeChallenge: params.code_challenge,
+    codeChallengeMethod: params.code_challenge_method || "S256",
+    state: params.state,
+  };
+  const consentToken = JWT.sign(consentPayload, await getConsentSigningKey(di), { expiresIn: "10m" });
+
+  return {
+    statusCode: 200,
+    headers: {
+      "content-type": "text/html",
+      "cache-control": "no-store",
+      ...antiFramingHeaders,
+    },
+    body: renderOauthConsentHtml(client.clientName || "An application", params.redirect_uri, consentToken),
+  };
+};
+
+// --- POST /oauth/authorize (consent decision) ---
+
+export const postOauthAuthorizeEndpoint = Endpoint.build("/oauth/authorize");
+export const postOauthAuthorizeHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postOauthAuthorizeEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+
+  const raw = event.body
+    ? event.isBase64Encoded
+      ? Buffer.from(event.body, "base64").toString("utf8")
+      : event.body
+    : "";
+  const form = Object.fromEntries(new URLSearchParams(raw));
+  const consentTokenRaw = form.consent_token;
+  const decision = form.decision;
+  if (!consentTokenRaw) {
+    return oauthError(400, "invalid_request", "Missing consent_token");
+  }
+
+  let consent: IConsentToken;
+  try {
+    consent = JWT.verify(consentTokenRaw, await getConsentSigningKey(di)) as IConsentToken;
+  } catch {
+    return oauthError(400, "invalid_request", "Invalid or expired consent token");
+  }
+  if (consent.type !== CONSENT_TOKEN_TYPE) {
+    return oauthError(400, "invalid_request", "Wrong token type");
+  }
+
+  // The token is signed, but re-check the live session: it binds the decision to
+  // whoever is actually driving this browser, so a stolen/pre-minted token can't
+  // be replayed inside another user's session. The distinct signing key means
+  // the consent token itself can't stand in as that session cookie.
+  const sessionUserId = await getCurrentUserId(event, di);
+  if (!sessionUserId || sessionUserId !== consent.userId) {
+    return oauthError(401, "access_denied", "Session does not match consent token");
+  }
+
+  const oauthDao = new OauthDao(di);
+  const client = await oauthDao.getClient(consent.clientId);
+  if (!client || !client.redirectUris.includes(consent.redirectUri)) {
+    return oauthError(400, "invalid_request", "Invalid client or redirect_uri");
+  }
+
+  const redirectUrl = new URL(consent.redirectUri);
+  if (consent.state) {
+    redirectUrl.searchParams.set("state", consent.state);
+  }
+
+  if (decision !== "allow") {
+    redirectUrl.searchParams.set("error", "access_denied");
+    return { statusCode: 302, body: "", headers: { location: redirectUrl.toString(), "cache-control": "no-store" } };
+  }
+
+  const authCode = await oauthDao.createAuthCode(
+    consent.clientId,
+    consent.userId,
+    consent.redirectUri,
+    consent.codeChallenge,
+    consent.codeChallengeMethod
+  );
+  redirectUrl.searchParams.set("code", authCode.code);
+
+  return { statusCode: 302, body: "", headers: { location: redirectUrl.toString(), "cache-control": "no-store" } };
+};
+
+// --- POST /oauth/token ---
+
+export const postOauthTokenEndpoint = Endpoint.build("/oauth/token");
+export const postOauthTokenHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postOauthTokenEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+
+  let body: Record<string, string>;
+  try {
+    const raw = event.body
+      ? event.isBase64Encoded
+        ? Buffer.from(event.body, "base64").toString("utf8")
+        : event.body
+      : "";
+    const contentType = event.headers["Content-Type"] || event.headers["content-type"] || "";
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      body = Object.fromEntries(new URLSearchParams(raw));
+    } else {
+      body = JSON.parse(raw);
+    }
+  } catch {
+    return oauthError(400, "invalid_request", "Invalid request body");
+  }
+
+  const grantType = body.grant_type;
+  const oauthDao = new OauthDao(di);
+
+  if (grantType === "authorization_code") {
+    return handleAuthCodeGrant(body, oauthDao, di);
+  } else if (grantType === "refresh_token") {
+    return handleRefreshTokenGrant(body, oauthDao);
+  }
+
+  return oauthError(400, "unsupported_grant_type", "Only authorization_code and refresh_token are supported");
+};
+
+async function handleAuthCodeGrant(
+  body: Record<string, string>,
+  oauthDao: OauthDao,
+  di: IDI
+): Promise<APIGatewayProxyResult> {
+  const { code, client_id, redirect_uri, code_verifier } = body;
+
+  if (!code || !client_id || !code_verifier) {
+    return oauthError(400, "invalid_request", "Missing required parameters");
+  }
+
+  const authCode = await oauthDao.getAuthCode(code);
+  if (!authCode) {
+    return oauthError(400, "invalid_grant", "Invalid or expired authorization code");
+  }
+
+  await oauthDao.deleteAuthCode(code);
+
+  if (authCode.expiresAt < Date.now()) {
+    return oauthError(400, "invalid_grant", "Authorization code expired");
+  }
+  if (authCode.clientId !== client_id) {
+    return oauthError(400, "invalid_grant", "client_id mismatch");
+  }
+  if (redirect_uri && authCode.redirectUri !== redirect_uri) {
+    return oauthError(400, "invalid_grant", "redirect_uri mismatch");
+  }
+  if (!OauthDao.verifyCodeChallenge(code_verifier, authCode.codeChallenge)) {
+    return oauthError(400, "invalid_grant", "Invalid code_verifier");
+  }
+
+  const token = await oauthDao.createToken(client_id, authCode.userId);
+  const client = await oauthDao.getClient(client_id).catch(() => undefined);
+  await new LogDao(di).recordAction(authCode.userId, McpClientSlug_connectAction(client?.clientName));
+  return oauthJson(200, {
+    access_token: token.token,
+    token_type: "Bearer",
+    expires_in: 3600,
+    refresh_token: token.refreshToken,
+  });
+}
+
+async function handleRefreshTokenGrant(
+  body: Record<string, string>,
+  oauthDao: OauthDao
+): Promise<APIGatewayProxyResult> {
+  const { refresh_token, client_id } = body;
+
+  if (!refresh_token || !client_id) {
+    return oauthError(400, "invalid_request", "Missing required parameters");
+  }
+
+  const existing = await oauthDao.getByRefreshToken(refresh_token);
+  if (!existing) {
+    return oauthError(400, "invalid_grant", "Invalid refresh token");
+  }
+  if (existing.clientId !== client_id) {
+    return oauthError(400, "invalid_grant", "client_id mismatch");
+  }
+
+  await oauthDao.deleteToken(existing.token);
+
+  const newToken = await oauthDao.createToken(client_id, existing.userId);
+  return oauthJson(200, {
+    access_token: newToken.token,
+    token_type: "Bearer",
+    expires_in: 3600,
+    refresh_token: newToken.refreshToken,
+  });
+}

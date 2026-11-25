@@ -1,0 +1,57 @@
+<!-- LFTSTART -->
+<!doctype html>
+<html lang="ja" class="liftosaur-app">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+    <title>Memori</title>
+    <link rel="stylesheet" type="text/css" href="./app.css?version=xxxxxxxx" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no, maximum-scale=1, minimum-scale=1, target-densitydpi=device-dpi, height=device-height"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="preload" href="./images/front-muscles.svg" as="image" />
+    <link rel="preload" href="./images/back-muscles.svg" as="image" />
+    <link rel="preload" href="./images/svgs/muscles-combined.svg" as="image" />
+    <link rel="shortcut icon" type="image/x-icon" href="./icons/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Memori" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="application-name" content="Memori" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
+    <meta
+      name="description"
+      content="筋トレの計画と記録をひとつにまとめた、端末の中だけで動く自分用のアプリ"
+    />
+    <meta property="og:title" content="Memori" />
+    <meta
+      property="og:description"
+      content="組み込みのプログラムで重さを少しずつ上げながら、筋トレを記録できます。"
+    />
+    <meta property="og:type" content="website" />
+    <script src="./rollbar-stub.js"></script>
+    <style>
+      html,
+      #app {
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body class="bg-background-default text-text-primary">
+    <div id="app"></div>
+    <div id="modal"></div>
+    <div id="bottomsheet"></div>
+    <div id="keyboard"></div>
+    <noscript>Memori を使うには JavaScript を有効にしてください</noscript>
+    <script src="./vendors.js?vendor=xxxxxxxx"></script>
+    <script src="./app.js?version=xxxxxxxx"></script>
+  </body>
+</html>
+<!-- LFTEND -->

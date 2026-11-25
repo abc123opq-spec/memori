@@ -1,0 +1,261 @@
+import { JSX, memo, MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { View } from "react-native";
+import Animated from "react-native-reanimated";
+import { WorkoutLayoutTransition } from "./workoutLayoutTransition";
+import { useWorkoutImpression } from "../utils/useWorkoutImpression";
+import { useTrackClick } from "../utils/clickTracking";
+import { ActiveGraphContext, IActiveGraphContext } from "./activeGraphContext";
+import { IDispatch } from "../ducks/types";
+import { IHistoryRecord, ISettings, ISubscription, IHistoryEntry, IProgramState, IStats } from "../types";
+import { updateSettings } from "../models/state";
+import { lb } from "lens-shmens";
+import { Exercise_toKey } from "../models/exercise";
+import {
+  History_collectAllHistoryRecordsOfExerciseType,
+  History_collectWeightPersonalRecord,
+  History_collect1RMPersonalRecord,
+  IPrevExerciseData,
+} from "../models/history";
+import { Rm1Formula_fromSettings } from "../models/rm1Formula";
+import { useDashboardEvaluation } from "./dashboard/dashboardEvaluation";
+import { LinkButton } from "./linkButton";
+import { CollectionUtils_sort } from "../utils/collection";
+import { IEvaluatedProgram, IEvaluatedProgramDay } from "../models/program";
+import { IByExercise } from "../pages/planner/plannerEvaluator";
+import { Collector } from "../utils/collector";
+import { Locker } from "./locker";
+import { Subscriptions_hasSubscription } from "../utils/subscriptions";
+import { GraphExercise } from "./graphExercise";
+import { ExerciseAllTimePRs } from "./exerciseAllTimePRs";
+import { ExerciseHistory } from "./exerciseHistory";
+import { Reps_setsStatus } from "../models/set";
+import { Weight_build } from "../models/weight";
+import { WorkoutExerciseCard } from "./workoutExerciseCard";
+import { usePerfRenderCount } from "../utils/usePerfRenderCount";
+import { PerfProbeSubtree } from "../utils/perfProbeSubtree";
+import { IWeightDeviation } from "../models/weightDeviation";
+
+interface IWorkoutExerciseProps {
+  day: number;
+  otherStates?: IByExercise<IProgramState>;
+  program?: IEvaluatedProgram;
+  programDay?: IEvaluatedProgramDay;
+  history: IHistoryRecord[];
+  progressId: number;
+  progressStartTime: number;
+  userPromptedStateVars?: Partial<Record<string, IProgramState>>;
+  supersetEntry?: IHistoryEntry;
+  prevData?: IPrevExerciseData;
+  isCurrentProgress: boolean;
+  showHelp?: boolean;
+  helps: string[];
+  stats: IStats;
+  entryIndex: number;
+  entry: IHistoryEntry;
+  isCurrentPage?: boolean;
+  impressionsSeenRef?: MutableRefObject<Set<string>>;
+  subscription: ISubscription;
+  settings: ISettings;
+  dispatch: IDispatch;
+  onTitleLayout?: (title: View) => void;
+  onUpdateProgramWeight?: (programExerciseId: string, deviation: IWeightDeviation) => void;
+}
+
+function WorkoutExerciseInner(props: IWorkoutExerciseProps): JSX.Element {
+  usePerfRenderCount("WorkoutExercise");
+  // Stabilize the exercise reference by identity: props.entry.exercise gets rebuilt (value-identical,
+  // new ref) on every set completion, and it feeds GraphExercise/ExerciseHistory and their O(history)
+  // memos — so key it on the exercise key so those stay memoized across set completions regardless of
+  // any upstream reference churn.
+  const exerciseType = useMemo(() => props.entry.exercise, [Exercise_toKey(props.entry.exercise)]);
+
+  const fallbackSeenRef = useRef<Set<string>>(new Set());
+  const seenRef = props.impressionsSeenRef ?? fallbackSeenRef;
+  const isCurrentPage = props.isCurrentPage ?? false;
+  const graphImpression = useWorkoutImpression({ name: "workout-graph", isCurrentPage, seenRef });
+  const historyImpression = useWorkoutImpression({ name: "workout-history", isCurrentPage, seenRef });
+  const trackClick = useTrackClick();
+  // A ref, not a closure: a new identity per page change would re-render the memoized graph.
+  const isCurrentPageRef = useRef(isCurrentPage);
+  isCurrentPageRef.current = isCurrentPage;
+  const onGraphInteract = useCallback(
+    (reason: "manipulate" | "type") => {
+      const name = reason === "type" ? "workout-graph-type" : "workout-graph-interact";
+      if (!isCurrentPageRef.current || seenRef.current.has(name)) {
+        return;
+      }
+      seenRef.current.add(name);
+      trackClick(name);
+    },
+    [seenRef, trackClick]
+  );
+
+  const [isHeavyContentReady, setIsHeavyContentReady] = useState(false);
+  useEffect(() => {
+    // Defer below-the-fold heavy content (graphs/PRs + the O(history) PR math) off the first paint so
+    // the card renders immediately. Deterministic delay on purpose, NOT InteractionManager: this
+    // screen uses native-stack transitions (react-native-screens) and a gesture-driven pager, neither
+    // of which registers a JS interaction handle — runAfterInteractions would fire mid-transition, not
+    // after it. ~350ms clears the push slide so the work lands once the screen has settled.
+    if (!isCurrentPage || isHeavyContentReady) {
+      return undefined;
+    }
+    const t = setTimeout(() => setIsHeavyContentReady(true), 350);
+    return () => clearTimeout(t);
+  }, [isCurrentPage, isHeavyContentReady]);
+
+  // The "previous workout" values shown on first paint come from props.prevData, which the parent
+  // builds for the whole workout in a single pass — so the card mounts without scanning history here.
+  // This full per-exercise filter + sort + time range only feeds the deferred graph/PRs/history
+  // blocks below, so it's gated behind isHeavyContentReady to keep it off the mount frame (it was the
+  // dominant workout-screen mount jank for users with large histories).
+  const history = useMemo(() => {
+    if (!isHeavyContentReady) {
+      return [];
+    }
+    const [records] = Collector.build(props.history)
+      .addFn(History_collectAllHistoryRecordsOfExerciseType(exerciseType))
+      .run();
+    return CollectionUtils_sort(records, (a, b) => {
+      return props.settings.exerciseStatsSettings.ascendingSort ? a.startTime - b.startTime : b.startTime - a.startTime;
+    });
+  }, [isHeavyContentReady, props.history, exerciseType, props.settings.exerciseStatsSettings.ascendingSort]);
+
+  const graphEvaluation = useDashboardEvaluation();
+
+  // PRs feed only the (already deferred) graphs/PRs block, and the per-record 1RM math is the
+  // expensive part — so defer it and run it over the already-filtered slice, not all history.
+  const formula = Rm1Formula_fromSettings(props.settings);
+  const [{ maxWeight, maxWeightHistoryRecord }, { max1RM, max1RMHistoryRecord, max1RMSet }] = useMemo(() => {
+    if (!isHeavyContentReady) {
+      const zero = Weight_build(0, props.settings.units);
+      return [
+        { maxWeight: zero, maxWeightHistoryRecord: undefined },
+        { max1RM: zero, max1RMHistoryRecord: undefined, max1RMSet: undefined },
+      ];
+    }
+    return Collector.build(history)
+      .addFn(History_collectWeightPersonalRecord(exerciseType, props.settings.units))
+      .addFn(History_collect1RMPersonalRecord(exerciseType, props.settings.units, formula))
+      .run();
+  }, [isHeavyContentReady, history, exerciseType, props.settings.units, formula]);
+  const showPrs = maxWeight.value > 0 || max1RM.value > 0;
+  const status = Reps_setsStatus(props.entry.sets);
+
+  const [activeGraphId, setActiveGraphId] = useState<string | null>(null);
+  const activeGraphValue = useMemo<IActiveGraphContext>(
+    () => ({ activeId: activeGraphId, setActive: setActiveGraphId }),
+    [activeGraphId]
+  );
+
+  const dispatch = props.dispatch;
+  const shouldHideGraphs = props.settings.workoutSettings.shouldHideGraphs;
+  const maxWeightProp = useMemo(
+    () => (maxWeight ? { weight: maxWeight, historyRecord: maxWeightHistoryRecord } : undefined),
+    [maxWeight, maxWeightHistoryRecord]
+  );
+  const max1RMProp = useMemo(
+    () => (max1RM ? { weight: max1RM, historyRecord: max1RMHistoryRecord, set: max1RMSet } : undefined),
+    [max1RM, max1RMHistoryRecord, max1RMSet]
+  );
+  const onToggleGraphs = useCallback(() => {
+    updateSettings(
+      dispatch,
+      lb<ISettings>().p("workoutSettings").p("shouldHideGraphs").record(!shouldHideGraphs),
+      "Toggle graphs visibility"
+    );
+  }, [dispatch, shouldHideGraphs]);
+
+  return (
+    <View data-testid={`exercise-progress-${status}`} testID={`exercise-progress-${status}`}>
+      <PerfProbeSubtree id="sets-grid">
+        <WorkoutExerciseCard
+          day={props.day}
+          stats={props.stats}
+          entry={props.entry}
+          entryIndex={props.entryIndex}
+          settings={props.settings}
+          dispatch={props.dispatch}
+          prevData={props.prevData}
+          program={props.program}
+          programDay={props.programDay}
+          otherStates={props.otherStates}
+          progressId={props.progressId}
+          supersetEntry={props.supersetEntry}
+          progressUserPromptedStateVars={props.userPromptedStateVars}
+          isCurrentProgress={props.isCurrentProgress}
+          showHelp={props.showHelp}
+          helps={props.helps}
+          subscription={props.subscription}
+          onTitleLayout={props.onTitleLayout}
+          onUpdateProgramWeight={props.onUpdateProgramWeight}
+        />
+      </PerfProbeSubtree>
+      <Animated.View layout={WorkoutLayoutTransition}>
+        {((props.prevData?.count ?? 0) > 1 || showPrs) && (
+          <View className="items-center mt-2">
+            <LinkButton className="text-sm" name="toggle-workout-graphs" onClick={onToggleGraphs}>
+              {props.settings.workoutSettings.shouldHideGraphs ? "Show Graphs and PRs" : "Hide Graphs and PRs"}
+            </LinkButton>
+          </View>
+        )}
+        {!props.settings.workoutSettings.shouldHideGraphs && (
+          <>
+            {history.length > 1 && isHeavyContentReady && (
+              <View
+                data-testid="workout-stats-graph"
+                testID="workout-stats-graph"
+                className="relative mx-4 mt-2"
+                ref={graphImpression.ref}
+                onLayout={graphImpression.onLayout}
+              >
+                <Locker topic="Graphs" dispatch={props.dispatch} blur={8} subscription={props.subscription} />
+                <ActiveGraphContext.Provider value={activeGraphValue}>
+                  <PerfProbeSubtree id="graph">
+                    <GraphExercise
+                      id={`workout-graph-${Exercise_toKey(exerciseType)}`}
+                      key={`${Exercise_toKey(exerciseType)}_${props.settings.theme}`}
+                      settings={props.settings}
+                      evaluation={graphEvaluation}
+                      exercise={exerciseType}
+                      initialType={props.settings.graphsSettings.defaultType}
+                      dispatch={props.dispatch}
+                      isInteractive={Subscriptions_hasSubscription(props.subscription)}
+                      onInteract={onGraphInteract}
+                    />
+                  </PerfProbeSubtree>
+                </ActiveGraphContext.Provider>
+              </View>
+            )}
+            {showPrs && (
+              <View className="mx-4 mt-2">
+                <ExerciseAllTimePRs
+                  maxWeight={maxWeightProp}
+                  max1RM={max1RMProp}
+                  settings={props.settings}
+                  dispatch={props.dispatch}
+                />
+              </View>
+            )}
+          </>
+        )}
+        {history.length > 0 && isHeavyContentReady && (
+          <View className="mx-4 mt-2">
+            <PerfProbeSubtree id="history">
+              <ExerciseHistory
+                exerciseType={exerciseType}
+                settings={props.settings}
+                dispatch={props.dispatch}
+                history={history}
+                source="workout"
+                firstRecordProbe={historyImpression}
+              />
+            </PerfProbeSubtree>
+          </View>
+        )}
+      </Animated.View>
+    </View>
+  );
+}
+
+export const WorkoutExercise = memo(WorkoutExerciseInner);

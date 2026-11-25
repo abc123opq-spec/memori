@@ -1,0 +1,275 @@
+---
+id: gzcl-uhf-5-weeks
+name: "GZCL: UHF 5週間"
+author: Cody Lefever
+url: "https://www.gainzfever.com/"
+shortDescription: 日ごとに変化する波状ピリオダイゼーション（DUP）で進める、5週間のGZCLプログラム。超高頻度（Ultra High Frequency）。
+isMultiweek: true
+tags: []
+frequency: 5
+age: "more_than_year"
+duration: "60-90"
+goal: "strength_and_hypertrophy"
+---
+
+オリジナルの9週間版GZCL: UHFを、5週間に組み直したバージョンです。
+
+始める前に、必ず[プログラムの解説](https://swoleateveryheight.blogspot.com/2016/02/gzcl-applications-adaptations.html)を読んでください。
+
+<!-- more -->
+
+GZCL: UHF（Ultra High Frequency、超高頻度）は、**GZCLの原則**にもとづくウェイトトレーニングのプログラムです。作者は[Cody Lefever](https://www.gainzfever.com/)で、GZCLという名前は彼のRedditのユーザー名[u/gzcl](https://www.reddit.com/u/gzcl)に由来します。GZCLの原則と、日ごとに変化する波状ピリオダイゼーション（Daily Undulating Periodization、DUP）を組み合わせています。[GZCL: The Rippler](/programs/gzcl-the-rippler)と少し似ていますが、The Ripplerが週ごとに波をつけるのに対し、UHFはDUPにより近く、ボリュームと強度を毎日変えます。
+
+もうひとつの違いは分け方です。The Ripplerは上半身の日と下半身の日に分けますが、UHFはほぼ毎日が全身のワークアウトです（T1が上半身の種目ならT2は下半身、T1が下半身ならT2は上半身）。
+
+ボリュームもかなり多く、上級者向けのプログラムです。
+
+## GZCLの原則
+
+まず、基本の用語を押さえておきます。
+
+- **レップマックス（RM）**：決まったレップ数でできる最大の重量です。たとえば100kgで5回しかできないなら、5RMは100kgです。測るときは完全な限界までやらず、フォームを保てなくなる手前で止めてください。
+
+次に、種目の分け方です。GZCLのプログラムでは、種目を**3つのティア**に分けます。
+
+- **T1**：メインのコンパウンド種目です（例：[{Squat}]、[{Deadlift}]、[{Bench Press}]、[{Overhead Press}]）。強度は最も高く（2〜3RMの**85〜100%**ほどの重い重量）、ボリュームは少なめです（レップ数もセット数も少なめ）。合計で10〜15回が目安で、多くは1セットあたり**1〜3回**です。
+- **T2**：サブのコンパウンド種目です（例：[{Front Squat}]、[{Romanian Deadlift}]、[{Incline Bench Press}]など）。T1より強度は低く（軽い重量）、ボリュームは多くなります（レップもセットも多め）。T1を補助する種目を選んでください。2〜3RMの**65〜85%**で、1セットあたり**5〜8回**が目安です。
+- **T3**：アイソレーション種目です（例：[{Leg Press}]、[{Seated Leg Curl}]、[{Triceps Extension}]、[{Lateral Raise}]）。強度は最も低く（軽い重量）、ボリュームは最も多くなります（レップもセットも多め）。2〜3RMの**65%未満**で、1セットあたり**8回以上**が目安です。
+
+覚えやすい目安として、**1:2:3のルール**があります。T1で1回行うごとに、T2で2回、T3で3回行います。
+
+ここで書いたのはGZCLの原則の短い説明です。詳しくは、[Codyのブログ記事](http://swoleateveryheight.blogspot.com/2012/11/the-gzcl-method-for-powerlifting.html)をぜひ読んでください。
+
+## UHFプログラムへのGZCLの原則の当てはめ方
+
+### T1種目
+
+UHFでは、2RMの重量をトレーニングマックス（TM）として使います。**5週間**のプログラムで、週ごとにT1種目の2RMに対する割合とレップ数が変わります。たとえば1週目は、[{Squat}]が2RMの85%、[{Deadlift}]が75%、[{Sling Shot Bench Press}]が90%といった具合です。
+
+リニアピリオダイゼーションのプログラムと同じく、重量は全体として上がり、ボリュームは下がります。ただし重量の上がり方は直線的ではなく波状で、1つの波は3週間です。
+
+:::exercise-example{exercise="squat" equipment="barbell" key="t1-squat_barbell"}
+
+### T2種目
+
+T2もT1と同じく、2RMをTMとして使います。ただしT1と違い、重量は波をつけず直線的に上げ、ボリュームは緩やかな波を描いて下げます。波の山になるのは、主にAMRAP（限界までのレップ数）のセットです。
+
+T2の種目は、T1の「反対側」から選びます。T1が上半身ならT2は下半身、T1が下半身ならT2は上半身です。このためUHFは、実質的に全身を鍛えるプログラムになっています。
+
+:::exercise-example{exercise="inclineBenchPress" equipment="barbell" key="t2-inclinebenchpress_barbell"}
+
+### T3種目
+
+T3の1セット目は、RMまで重量を上げていくセットです。1週目は15RM、2週目は12RM、というように変わります。15RMまで上げるには、まず15RMのおおよその重量を見積もり、疲れない程度の「ウォームアップ」セットを3〜4セット行って、少しずつ重量を上げます。たとえば[{Bicep Curl}]の15RMを22.5kgと見積もったなら、次のように行います。
+
+- 空のバーで5回
+- 12.5kgで5回
+- 17.5kgで3回
+- 22.5kgで15回
+
+選んだ重量が重すぎて8回しかできなかった場合や、軽すぎて12回できた場合でも問題ありません。続けるうちに精度は上がるので、重量とレップ数を記録して、マックスレップセットに進んでください。
+
+マックスレップセットでは、1セット目と同じ重量（この例では22.5kg）で、できるだけ多くのレップを行います。2セット目、3セット目と進むにつれて、疲労がたまってレップ数は減っていきますが、それは想定どおりです。
+
+:::exercise-example{exercise="bicepCurl" equipment="dumbbell" key="t3-bicepcurl_dumbbell"}
+
+ここまでは簡単な説明です。詳しい内容は、[GZCLの応用についての元記事](http://swoleateveryheight.blogspot.com/2016/02/gzcl-applications-adaptations.html)を読んでください。
+
+下のインタラクティブなプレイグラウンドで、プログラムの仕組みと、各週の重量・セット数・レップ数を確認できます。各種目の2RMや5RMなどの重量を変えると、重量がどう変わるかも見られます。
+
+GZCL: UHF 5週間のプログラムは、Memoriアプリで実行できます。
+
+<!-- faq -->
+
+### GZCL UHF 5週間は初心者に向いていますか？
+
+向いていません。UHF 5週間は上級者向けのプログラムで、スクワット、ベンチプレス、デッドリフト、オーバーヘッドプレスに十分な経験が必要です。割合（%）で組むプログラムで、高いボリュームのトレーニングを週5日続けられることが前提です。まずは[GZCLP](/programs/gzclp)か[The Rippler](/programs/gzcl-the-rippler)から始めてください。
+
+### GZCL UHF 5週間は週に何日ですか？
+
+月曜から金曜までの週5日のプログラムです。毎回のワークアウトに、T1のメイン種目、T2のサブ種目、複数のT3のアイソレーション種目が入るので、どの日もほぼ全身のワークアウトになります。
+
+### GZCL UHF 5週間と9週間の違いは何ですか？
+
+5週間版は、同じDUPの考え方を短い期間にまとめたものです。9週間版は、強度の段階ごとに週数が増えて進み方がより緩やかになるので、長いトレーニングブロックやピーキングのサイクル向きです。
+
+### UHFのDaily Undulating Periodizationとは何ですか？
+
+DUPは、ボリュームと強度を週ごとではなく日ごとに変える方法です。UHFでは、トレーニング日ごとにT1とT2の割合とレップ数の組み方が変わるので、1週間のなかに、重い刺激、中程度の刺激、軽い刺激が入ります。
+
+### GZCL UHFのプログレッションはどう進みますか？
+
+T1とT2の種目は、2RMをもとにした5週間分の割合が決まっています。週を追うごとに、重量は全体として上がり、ボリュームは下がります。T3の種目はRMを使う方法で、1セット目でRMまで重量を上げ、残りは同じ重量でマックスレップセットを行います。
+
+### GZCL UHF 5週間は、どのくらいの期間続ければよいですか？
+
+5週間を1サイクルとして行い、そのあと見直してください。まだ伸びているなら、RMを更新してサイクルを繰り返せます。もっと長いトレーニングブロックにしたい場合は、9週間版を検討してください。
+
+```liftoscript
+# Week 1
+## Day 1
+// **T1**. Before starting the sets, set your 1RM - by clicking "Edit" icon at the exercise.
+t1: Squat / 2x4 81%, 1x4+ 81% / 180s 
+// **T2**. Same - set your 1RM before starting the sets
+t2: Incline Bench Press / 3x10 57%, 1x10+ 57% / 120s
+// **T3**. Work up to the RM for the first set, then use the same weight for the rest of the sets
+t3: Seated Row / 1x12-15 60%+, 4x1+ 60% / 60s / update: custom() {~
+  if (setIndex == 1) {
+    weights = completedWeights[1]
+  }
+~}
+// ...t3: Seated Row
+t3: Bicep Curl[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Seated Leg Curl[1-5] / ...t3: Seated Row/ update: custom() { ...t3: Seated Row }
+
+## Day 2
+// ...t1: Squat
+t1: Bench Press / 2x4 81%, 1x4+ 81% / 180s
+// **T2**. Pause Squat. Same - set your 1RM before starting the sets
+t2: Squat / 6x3 67%, 1x3+ 67% / 120s
+// ...t3: Seated Row
+t3: Shoulder Press[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Lateral Raise[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Pec Deck[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+
+## Day 3
+// **T1**. 3" Deficit Deadlift. Before starting the sets, set your 1RM - by clicking "Edit" icon at the exercise.
+t1: Deadlift / 2x4 71%, 1x4+ 71% / 180s
+// ...t2: Incline Bench Press
+t2: Legs Up Bench Press / 3x10 57%, 1x10+ 57% / 120s
+// ...t3: Seated Row
+t3: Pull Up[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Reverse Hyperextension[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Reverse Fly[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+
+## Day 4
+// ...t1: Squat
+t1: Sling Shot Bench Press / 2x4 86%, 1x4+ 86% / 180s
+// **T2**. Paused Deadlift. Same - set your 1RM before starting the sets
+t2: Deadlift / 6x3 57%, 1x3+ 57% / 120s
+// ...t3: Seated Row
+t3: Incline Bench Press Wide Grip[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Chest Dip[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+
+## Day 5
+// ...t1: Squat
+t1: Front Squat / 2x4 81%, 1x4+ 81% / 180s
+// ...t2: Incline Bench Press
+t2: Bench Press Close Grip / 3x10 62%, 1x10+ 62% / 120s
+// ...t3: Seated Row
+t3: Stiff Leg Deadlift[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Lunge[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+// ...t3: Seated Row
+t3: Lat Pulldown[1-5] / ...t3: Seated Row / update: custom() { ...t3: Seated Row }
+
+
+# Week 2
+## Day 1
+// **T1**
+t1: Squat / 3x3 86%, 1x3+ 86% / 190s
+// **T2**
+t2: Incline Bench Press / 4x8 62% / 128s
+t3: Seated Row / 1x12-15 60%+, 4x1+ 60% / 64s
+
+## Day 2
+t1: Bench Press / 3x3 86%, 1x3+ 86% / 190s
+// **T2**. Pause Squat.
+t2: Squat / 8x2 71% / 128s
+
+## Day 3
+// **T1**. 3" Deficit Deadlift
+t1: Deadlift / 3x3 76%, 1x3+ 76% / 190s
+// **T2**
+t2: Legs Up Bench Press / 4x8 62% / 128s
+
+## Day 4
+t1: Sling Shot Bench Press / 3x3 90%, 1x3+ 90% / 190s
+// **T2**. Paused Deadlift.
+t2: Deadlift / 8x2 62% / 128s
+
+## Day 5
+t1: Front Squat / 3x3 86%, 1x3+ 86% / 190s
+t2: Bench Press Close Grip / 4x8 67% / 128s
+
+
+# Week 3
+## Day 1
+t1: Squat / 1x3 83%, 1x2 88%, 2x1 93%, 1x1+ 93% / 200s
+t2: Incline Bench Press / 4x6 67% / 136s
+t3: Seated Row / 1x8-10 73%+, 3x1+ 73% / 68s
+
+## Day 2
+t1: Bench Press / 1x3 83%, 1x2 88%, 2x1 93%, 1x1+ 93% / 200s
+t2: Squat / 9x1 76%, 1x1+ 76% / 136s
+
+## Day 3
+// **T1**. 2" Deficit Deadlift
+t1: Deadlift / 4x2 81%, 1x2+ 81% / 200s
+t2: Legs Up Bench Press / 4x6 67% / 136s
+
+## Day 4
+t1: Sling Shot Bench Press / 1x3 88%, 1x2 93%, 2x1 97%, 1x1+ 97% / 200s
+t2: Deadlift / 9x1 67%, 1x1+ 67% / 136s
+
+## Day 5
+t1: Front Squat / 1x3 83%, 1x2 88%, 2x1 93%, 1x1+ 93% / 200s
+t2: Bench Press Close Grip / 4x6 71% / 136s
+
+
+# Week 4
+## Day 1
+t1: Squat / 4x1 90%, 1x1+ 90% / 210s
+t2: Incline Bench Press / 4x5 71%, 1x5+ 71% / 144s
+t3: Seated Row / 1x6-8 79%+, 2x1+ 79% / 72s
+
+## Day 2
+t1: Bench Press / 4x1 90%, 1x1+ 90% / 210s
+// **T2**
+t2: Squat / 4x5 74%, 1x5+ 74% / 144s
+
+## Day 3
+// **T1**. 1" Deficit Deadlift
+t1: Deadlift / 1x3 83%, 1x2 88%, 2x1 93%, 1x1+ 93% / 210s
+t2: Legs Up Bench Press / 4x5 71%, 1x5+ 71% / 144s
+
+## Day 4
+t1: Sling Shot Bench Press / 4x1 95%, 1x1+ 95% / 210s
+// **T2**
+t2: Deadlift / 4x5 71%, 1x5+ 71% / 144s
+
+## Day 5
+t1: Front Squat / 4x1 90%, 1x1+ 90% / 210s
+t2: Bench Press Close Grip / 4x5 76%, 1x5+ 76% / 144s
+
+
+# Week 5
+## Day 1
+t1: Squat / 1x3 86%, 1x2 90%, 1x1+ 95% / 220s
+t2: Incline Bench Press / 1x1+ 52% / 152s
+t3: Seated Row / 1x10 73%+ / 76s
+
+## Day 2
+t1: Bench Press / 1x3 86%, 1x2 90%, 1x1+ 95% / 220s
+t2: Squat / 1x1+ 57% / 152s
+
+## Day 3
+// **T1**
+t1: Deadlift / 1x3 86%, 1x2 90%, 1x1+ 95% / 220s
+t2: Legs Up Bench Press / 1x1+ 52% / 152s
+
+## Day 4
+t1: Sling Shot Bench Press / 1x3 90%, 1x2 95%, 1x1+ 100% / 220s
+t2: Deadlift / 1x1+ 52% / 152s
+
+## Day 5
+t1: Front Squat / 1x3 86%, 1x2 90%, 1x1+ 95% / 220s
+t2: Bench Press Close Grip / 1x1+ 57% / 152s
+```

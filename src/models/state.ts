@@ -1,0 +1,270 @@
+import { Service } from "../api/service";
+import { IAudioInterface } from "../lib/audioInterface";
+import { IPlannerState } from "../pages/planner/models/types";
+import { IDispatch } from "../ducks/types";
+import { Storage_getDefault } from "../models/storage";
+import { ILensRecordingPayload } from "lens-shmens";
+import { IUser } from "./user";
+import { IProgramIndexEntry } from "./program";
+import { IProgramGuide } from "./programGuide";
+import {
+  IStorage,
+  IProgram,
+  IHistoryRecord,
+  IProgramDay,
+  ISettings,
+  IExerciseType,
+  IEquipment,
+  IStats,
+  IImportSession,
+} from "../types";
+import { IImportResult } from "../utils/importTypes";
+import { AsyncQueue } from "../utils/asyncQueue";
+import { basicBeginnerProgram } from "../programs/basicBeginnerProgram";
+import type { NavigationContainerRef } from "@react-navigation/native";
+import type { IRootStackParamList } from "../navigation/types";
+import type { IScreenData } from "./screen";
+import type { IProgramPreviewPlaygroundState } from "../components/preview/programPreviewPlaygroundSetup";
+import type { IIapActiveSubscription, IIapAdapter } from "../utils/iapAdapter";
+import type { IHealthAdapter } from "../utils/healthAdapter";
+import type { IPushSync } from "../utils/pushSyncAdapter";
+import type { Persistence } from "../utils/persistence";
+import type { ITimerBridge } from "../utils/timerBridge";
+import type { IWorkoutBridge } from "../utils/workoutBridge";
+import type { IWatchBridge } from "../utils/watchBridge";
+import type { IKeychain } from "../utils/keychain";
+import type { IWorkoutMirroring } from "../utils/workoutMirroring";
+import type { IHeartRateStore } from "../utils/heartRateStore";
+import type { ILoginConflictRequest, LoginConflictPrompt } from "../utils/loginConflictPrompt";
+import type { ISocialState } from "./socialState";
+import type { IProgramEditsResponse } from "./friendProgram";
+
+export type IEnv = {
+  service: Service;
+  audio: IAudioInterface;
+  queue: AsyncQueue;
+  persistence: Persistence;
+  navigationRef?: NavigationContainerRef<IRootStackParamList>;
+  getCurrentScreenData?: () => IScreenData | undefined;
+  iap?: IIapAdapter;
+  health?: IHealthAdapter;
+  push?: IPushSync;
+  timer: ITimerBridge;
+  workout: IWorkoutBridge;
+  watch: IWatchBridge;
+  keychain: IKeychain;
+  mirroring: IWorkoutMirroring;
+  heartRate: IHeartRateStore;
+  loginConflict: LoginConflictPrompt;
+};
+
+export interface INotification {
+  type: "error" | "success";
+  content: string;
+}
+
+export interface INavCommon {
+  loading: ILoading;
+  userId?: string;
+  currentProgram?: IProgram;
+  isOngoingProgress: boolean;
+  isThanksgivingPromo?: boolean;
+  stats: IStats;
+  settings: ISettings;
+  pendingFollowRequests?: number;
+  unseenProgramEdits?: number;
+  programEdits?: IProgramEditsResponse;
+}
+
+export interface ILoadingItem {
+  startTime: number;
+  type: string;
+  attempt?: number;
+  endTime?: number;
+  error?: string;
+}
+
+export type ILoading = {
+  items: Partial<Record<string, ILoadingItem>>;
+};
+
+export interface ISubscriptionLoading {
+  monthly?: boolean;
+  yearly?: boolean;
+  lifetime?: boolean;
+}
+
+export interface IStateErrors {
+  corruptedstorage?: {
+    userid: string;
+    backup: boolean;
+    confirmed: boolean;
+    local: boolean;
+  };
+}
+
+export interface IAppleOffer {
+  yearly: IApplePromotionalOffer;
+  monthly: IApplePromotionalOffer;
+}
+
+export interface IApplePromotionalOffer {
+  offerId: string;
+  signature: string;
+  nonce: string;
+  timestamp: number;
+}
+
+export interface IGoogleOffer {
+  yearly: IGooglePromotionalOffer;
+  monthly: IGooglePromotionalOffer;
+}
+
+export interface IGooglePromotionalOffer {
+  offerId: string;
+  productId: string;
+}
+
+export interface IOfferData {
+  offerId: string;
+  formattedPrice: string;
+}
+
+export interface IAttributionData {
+  isOrganic: boolean;
+  mediaSource: string;
+  campaign: string;
+  adSet: string;
+  ad: string;
+}
+
+export type ITourId = "workout" | "program";
+
+export interface IStateTour {
+  id: ITourId;
+  enforced: boolean;
+  // Screen the tour was started on. Step `condition`s resolve the active screen
+  // via getCurrentScreenData(), which returns the tour modal once it's open — so
+  // they're evaluated against this snapshot instead, keeping the steps shown in
+  // the modal consistent with the ones that triggered the tour.
+  screenData?: IScreenData;
+}
+
+export interface ILastSynced {
+  versions: IStorage["_versions"];
+  tempUserId: string;
+  serverVersionsFetchedAt: number;
+}
+
+export interface IState {
+  user?: IUser;
+  storage: IStorage;
+  lastSynced?: ILastSynced;
+  loginDecisionPending?: boolean;
+  loginConflictRequest?: ILoginConflictRequest;
+  programs: IProgram[];
+  programsIndex: IProgramIndexEntry[];
+  programGuides: Record<string, IProgramGuide>;
+  exerciseGuides?: Record<string, string>;
+  notification?: INotification;
+  revisions: Partial<Record<string, string[]>>;
+  prices?: Partial<Record<string, string>>;
+  offers?: Partial<Record<string, IOfferData[]>>;
+  loading: ILoading;
+  defaultEquipmentExpanded?: IEquipment;
+  subscriptionLoading?: ISubscriptionLoading;
+  subscriptionStatus?: IIapActiveSubscription[];
+  subscriptionStatusLoading?: boolean;
+  // Ephemeral, NON-synced optimistic hint for a just-queued Android plan switch, bridging the gap until
+  // Google's deferred RTDN lands and the server reports `pendingProduct` authoritatively. Session-only
+  // (not persisted/synced) and time-boxed via `until` so it can't drift like the old synced flag did.
+  subscriptionPendingHint?: { productId: string; until: number };
+  ownedLifetime?: boolean;
+  progress: Partial<Record<number, IHistoryRecord>>;
+  previewProgram?: {
+    id: string;
+    showCustomPrograms?: boolean;
+  };
+  muscleView?: {
+    type: "program" | "day";
+    programId?: string;
+    day?: number;
+  };
+  viewExerciseType?: IExerciseType;
+  adminKey?: string;
+  showWhatsNew?: boolean;
+  showSignupRequest?: boolean;
+  showHearAboutUs?: boolean;
+  toast?: string;
+  tour?: IStateTour;
+  scrollToHistoryRecordId?: number;
+  freshMigrations: boolean;
+  errors: IStateErrors;
+  reportedCorruptedStorage?: boolean;
+  nosync: boolean;
+  selectedGymId?: string;
+  appleOffer?: IAppleOffer;
+  googleOffer?: IGoogleOffer;
+  deviceId: string;
+  editProgramStates: Record<string, IPlannerState>;
+  playgroundState?: IProgramPreviewPlaygroundState;
+  importPreview?: IImportPreview;
+  social?: ISocialState;
+}
+
+export interface IImportPreview {
+  source: IImportSession["source"];
+  result: IImportResult;
+}
+
+export interface ILocalStorage {
+  storage?: IStorage;
+  lastSynced?: ILastSynced;
+  editDay?: IProgramDay;
+}
+
+export function buildState(args: {
+  storage?: IStorage;
+  notification?: INotification;
+  userId?: string;
+  nosync?: boolean;
+  deviceId: string;
+}): IState {
+  return {
+    progress: {},
+    programs: [basicBeginnerProgram],
+    programsIndex: [],
+    programGuides: {},
+    loading: { items: {} },
+    notification: args.notification,
+    storage: args.storage || Storage_getDefault(),
+    user: args.userId ? { email: args.userId, id: args.userId } : undefined,
+    errors: {},
+    revisions: {},
+    freshMigrations: false,
+    nosync: !!args.nosync,
+    deviceId: args.deviceId,
+    editProgramStates: {},
+  };
+}
+
+export function updateState(dispatch: IDispatch, lensRecording: ILensRecordingPayload<IState>[], desc: string): void {
+  dispatch({ type: "UpdateState", lensRecording, desc });
+}
+
+export function updateSettings(
+  dispatch: IDispatch,
+  lensRecording: ILensRecordingPayload<ISettings>,
+  desc: string
+): void {
+  dispatch({ type: "UpdateSettings", lensRecording, desc });
+}
+
+export function updateProgress(
+  dispatch: IDispatch,
+  lensRecordings: ILensRecordingPayload<IHistoryRecord>[] | ILensRecordingPayload<IHistoryRecord>,
+  desc: string
+): void {
+  const recordings = Array.isArray(lensRecordings) ? lensRecordings : [lensRecordings];
+  dispatch({ type: "UpdateProgress", lensRecordings: recordings, desc });
+}
