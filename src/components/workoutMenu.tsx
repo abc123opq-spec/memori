@@ -23,6 +23,7 @@ interface IWorkoutMenuProps {
   onShare: () => void;
   onConvertToProgram: () => void;
   onDelete: () => void;
+  onChangeDate: () => void;
   onOpenChange?: (isOpen: boolean) => void;
 }
 
@@ -30,6 +31,7 @@ const labels: Record<IWorkoutMenuAction, string> = {
   editDay: "Edit Program Day",
   muscles: "Day Muscles",
   notes: "Show Workout Notes",
+  changeDate: "Change Date",
   share: "Share",
   createProgramDay: "Create Program Day",
   tour: "Show Tour",
@@ -37,7 +39,7 @@ const labels: Record<IWorkoutMenuAction, string> = {
 };
 
 function WorkoutMenuInner(props: IWorkoutMenuProps): JSX.Element {
-  const { progress, program, allPrograms, dispatch, onShare, onConvertToProgram, onDelete } = props;
+  const { progress, program, allPrograms, dispatch, onShare, onConvertToProgram, onDelete, onChangeDate } = props;
   const showWorkoutNotes = !!props.settings.workoutSettings.showWorkoutNotes;
   const trackClick = useTrackClick();
   const currentProgram = allPrograms.find((p) => p.id === program?.id);
@@ -76,6 +78,7 @@ function WorkoutMenuInner(props: IWorkoutMenuProps): JSX.Element {
           "toggle-workout-notes"
         );
       },
+      changeDate: onChangeDate,
       share: () => {
         trackClick("past-workout-share");
         onShare();
@@ -103,6 +106,7 @@ function WorkoutMenuInner(props: IWorkoutMenuProps): JSX.Element {
       onShare,
       onConvertToProgram,
       onDelete,
+      onChangeDate,
     ]
   );
 

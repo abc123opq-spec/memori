@@ -20,7 +20,7 @@ describe("WorkoutMenuActions", () => {
       hasNonEmptyCurrentProgram: false,
       isInAnyProgram: false,
     });
-    expect(actions).to.eql(["notes", "share", "createProgramDay", "tour", "delete"]);
+    expect(actions).to.eql(["notes", "changeDate", "share", "createProgramDay", "tour", "delete"]);
   });
 
   it("drops edit day when the program is no longer among the user's programs", () => {

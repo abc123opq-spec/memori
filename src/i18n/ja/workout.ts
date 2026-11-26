@@ -55,6 +55,7 @@ export const jaWorkout: Record<string, string> = {
   "Day Muscles": "この日の筋肉",
   "Show Workout Notes": "ワークアウトメモを表示",
   "Hide Workout Notes": "ワークアウトメモを非表示",
+  "Change Date": "日付を変更",
   Share: "共有",
   "Show Tour": "ツアーを表示",
   "Delete Workout": "ワークアウトを削除",

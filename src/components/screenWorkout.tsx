@@ -247,10 +247,20 @@ function ScreenWorkoutInner(props: IScreenWorkoutProps): JSX.Element | null {
         onShare={onShare}
         onConvertToProgram={onConvertToProgram}
         onDelete={onDeletePressHandler}
+        onChangeDate={onTitleClick}
         onOpenChange={onOpenChange}
       />
     ),
-    [settings, dispatch, evaluatedProgram, props.allPrograms, onShare, onConvertToProgram, onDeletePressHandler]
+    [
+      settings,
+      dispatch,
+      evaluatedProgram,
+      props.allPrograms,
+      onShare,
+      onConvertToProgram,
+      onDeletePressHandler,
+      onTitleClick,
+    ]
   );
   // personal-fork: an ongoing workout hides the nav bar and puts the elapsed time and Finish at the top of the page
   const topBar = useMemo(
