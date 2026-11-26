@@ -20,7 +20,8 @@ import { FeedWorkout_key } from "../models/feedWorkout";
 import { FeedWorkoutCard } from "./social/feedWorkoutCard";
 import { useFocusEffect } from "@react-navigation/native";
 import { Thunk_loadFeed, Thunk_loadOwnReactions, Thunk_react, Thunk_refreshFeedIfStale } from "../ducks/socialThunks";
-import { Thunk_pushScreen, Thunk_startProgramDay } from "../ducks/thunks";
+import { Thunk_editHistoryRecord, Thunk_pushScreen, Thunk_startProgramDay } from "../ducks/thunks";
+import { PastDay_buildRecord } from "../models/pastDayRecord";
 import { Button } from "./button";
 import { IconFilter } from "./icons/iconFilter";
 import { LegendList, LegendListRef } from "@legendapp/list";
@@ -232,6 +233,7 @@ export function ProgramHistoryView(props: IProps): JSX.Element {
   const trackedState = useTrackedState();
   const scrollToRecordId = trackedState.scrollToHistoryRecordId;
   const [pendingScrollId, setPendingScrollId] = useState<number | undefined>(undefined);
+  const [selectedPastDay, setSelectedPastDay] = useState<number | undefined>(undefined);
   useEffect(() => {
     if (scrollToRecordId != null) {
       const target = sortedHistoryDesc.find((r) => r.id === scrollToRecordId);
@@ -397,6 +399,8 @@ export function ProgramHistoryView(props: IProps): JSX.Element {
             onSelectFirstDayOfWeek={(firstDayOfWeek) => {
               setSelectedWeekCalendarFirstDayOfWeek(firstDayOfWeek);
             }}
+            selectedDay={selectedPastDay}
+            onSelectDay={(day) => setSelectedPastDay(day === selectedPastDay ? undefined : day)}
           />
         </View>
         {hasFollowing && (
@@ -411,6 +415,27 @@ export function ProgramHistoryView(props: IProps): JSX.Element {
           </Pressable>
         )}
       </View>
+      {/* personal-fork: a past day picked in the week strip can get a workout logged afterwards */}
+      {selectedPastDay != null && (
+        <View className="px-4 mt-2">
+          <Pressable
+            testID="home-add-past-workout"
+            data-testid="home-add-past-workout"
+            accessibilityRole="button"
+            className="flex-row items-center justify-between px-4 border rounded-lg border-border-neutral"
+            style={{ minHeight: 48 }}
+            onPress={() => {
+              setSelectedPastDay(undefined);
+              dispatch(Thunk_editHistoryRecord(PastDay_buildRecord(selectedPastDay, Date.now())));
+            }}
+          >
+            <Text className="text-base font-semibold">Add a workout for this day</Text>
+            <Text noTranslate={true} className="text-sm text-text-secondary">
+              {DateUtils_format(selectedPastDay, false, true)}
+            </Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 

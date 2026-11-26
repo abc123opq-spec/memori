@@ -1,3 +1,4 @@
+import { PastDay_mergeIntoHistory } from "./pastDayRecord";
 import { StringUtils_joinNames } from "../utils/string";
 import { ExerciseDisplayName_name } from "../i18n/exerciseDisplayName";
 import { Translate_text, Translate_format } from "../i18n/translate";
@@ -2944,7 +2945,8 @@ export function Progress_finishWorkout(
   );
   let newHistory;
   if (!Progress_isCurrent(progress)) {
-    newHistory = storage.history.map((h) => (h.id === progress.id ? historyRecord : h));
+    // personal-fork: a record added for a past day is not in the history yet
+    newHistory = PastDay_mergeIntoHistory(storage.history, historyRecord);
   } else {
     newHistory = [historyRecord, ...storage.history];
   }

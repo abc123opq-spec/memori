@@ -8,6 +8,7 @@ import { IconArrowRight } from "./icons/iconArrowRight";
 import { IconSpinner } from "./icons/iconSpinner";
 import { Progress_isCurrent } from "../models/progress";
 import { IWeekCalendarPagerHandle, WeekCalendarPager } from "./weekCalendarPager";
+import { PastDay_canAdd } from "../models/pastDayRecord";
 
 interface IWeekCalendarProps {
   firstDayOfWeeks: number[];
@@ -19,6 +20,8 @@ interface IWeekCalendarProps {
   onSelectFirstDayOfWeek: (week: number) => void;
   onClick: () => void;
   history: IHistoryRecord[];
+  selectedDay?: number;
+  onSelectDay?: (day: number) => void;
 }
 
 export function WeekCalendar(props: IWeekCalendarProps): JSX.Element {
@@ -49,17 +52,34 @@ export function WeekCalendar(props: IWeekCalendarProps): JSX.Element {
 
   const renderPage = useCallback(
     (firstDayOfWeek: number) => (
-      <Pressable onPress={props.onClick}>
+      <View>
         <View className="flex-row justify-around w-full">
           {getWeekDays(firstDayOfWeek, dateToHistory, props.startWeekFromMonday).map((day, idx) => (
-            <View key={idx} className="items-center justify-center flex-1">
+            <Pressable
+              key={idx}
+              testID={`week-calendar-day-${DateUtils_formatYYYYMMDD(day.date)}`}
+              data-testid={`week-calendar-day-${DateUtils_formatYYYYMMDD(day.date)}`}
+              accessibilityRole="button"
+              className="items-center justify-center flex-1"
+              style={{ minHeight: 44 }}
+              onPress={() =>
+                props.onSelectDay != null && PastDay_canAdd(day.date.getTime(), Date.now())
+                  ? props.onSelectDay(day.date.getTime())
+                  : props.onClick()
+              }
+            >
               {/* personal-fork: today is an ink disc, a finished workout is a dot under the date */}
               <Text className={`text-xs ${day.isToday ? "font-semibold text-text-primary" : "text-text-ink3"}`}>
                 {day.dayName}
               </Text>
               <View
                 className={`items-center justify-center mt-1 w-scaled-9 h-scaled-9 rounded-full ${
-                  day.isToday ? "bg-button-primarybackground" : ""
+                  day.isToday
+                    ? "bg-button-primarybackground"
+                    : props.selectedDay != null &&
+                        DateUtils_formatYYYYMMDD(props.selectedDay) === DateUtils_formatYYYYMMDD(day.date)
+                      ? "border-2 border-text-primary"
+                      : ""
                 }`}
               >
                 <Text
@@ -77,12 +97,12 @@ export function WeekCalendar(props: IWeekCalendarProps): JSX.Element {
                   day.record && !Progress_isCurrent(day.record) ? "bg-text-primary" : ""
                 }`}
               />
-            </View>
+            </Pressable>
           ))}
         </View>
-      </Pressable>
+      </View>
     ),
-    [dateToHistory, props.startWeekFromMonday, props.onClick]
+    [dateToHistory, props.startWeekFromMonday, props.onClick, props.selectedDay, props.onSelectDay]
   );
 
   return (

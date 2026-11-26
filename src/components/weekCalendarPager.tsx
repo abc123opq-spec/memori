@@ -20,6 +20,8 @@ const containerStyle = {
   WebkitOverflowScrolling: "touch",
 } as unknown as StyleProp<ViewStyle>;
 
+const RENDERED_NEIGHBOURS = 2;
+
 const pageWrapperBaseStyle = {
   flexShrink: 0,
   scrollSnapAlign: "center",
@@ -38,6 +40,7 @@ export const WeekCalendarPager = forwardRef<IWeekCalendarPagerHandle, IWeekCalen
     initialIndexRef.current = initialIndex;
     const onPageChangeRef = useRef(onPageChange);
     onPageChangeRef.current = onPageChange;
+    const [activeIndex, setActiveIndex] = useState(initialIndex);
     const programmaticScrollUntilRef = useRef(0);
 
     const setContainerRef = useCallback((el: View | null) => {
@@ -53,6 +56,7 @@ export const WeekCalendarPager = forwardRef<IWeekCalendarPagerHandle, IWeekCalen
         }
         programmaticScrollUntilRef.current = Date.now() + (animated ? 600 : 120);
         lastEmittedIndexRef.current = index;
+        setActiveIndex(index);
         try {
           el.scrollTo({ left: index * width, behavior: animated ? "smooth" : "auto" });
         } catch {
@@ -104,10 +108,11 @@ export const WeekCalendarPager = forwardRef<IWeekCalendarPagerHandle, IWeekCalen
         if (width <= 0) {
           return;
         }
+        const idx = Math.round(node.scrollLeft / width);
+        setActiveIndex(idx);
         if (Date.now() < programmaticScrollUntilRef.current) {
           return;
         }
-        const idx = Math.round(node.scrollLeft / width);
         if (idx !== lastEmittedIndexRef.current) {
           lastEmittedIndexRef.current = idx;
           onPageChangeRef.current(idx);
@@ -120,12 +125,13 @@ export const WeekCalendarPager = forwardRef<IWeekCalendarPagerHandle, IWeekCalen
     return (
       <View ref={setContainerRef} onLayout={handleLayout} style={containerStyle}>
         {pageWidth > 0 &&
-          data.map((firstDayOfWeek) => (
+          data.map((firstDayOfWeek, index) => (
             <View
               key={firstDayOfWeek}
               style={{ ...pageWrapperBaseStyle, width: pageWidth } as unknown as StyleProp<ViewStyle>}
             >
-              {renderPage(firstDayOfWeek)}
+              {/* personal-fork: years of weeks make hundreds of pages, so only pages next to the visible one render */}
+              {Math.abs(index - activeIndex) <= RENDERED_NEIGHBOURS ? renderPage(firstDayOfWeek) : null}
             </View>
           ))}
       </View>

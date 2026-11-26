@@ -1124,7 +1124,11 @@ export interface IHomeWeekData {
   historyRecordDateToFirstDayOfWeek: Partial<Record<number, number>>;
 }
 
-function buildHomeWeekData(history: IHistoryRecord[], startWeekFromMonday: boolean): IHomeWeekData {
+export function History_buildHomeWeekData(
+  history: IHistoryRecord[],
+  startWeekFromMonday: boolean,
+  now: number = Date.now()
+): IHomeWeekData {
   const firstDayOfWeeksSet: Set<number> = new Set();
   const historyRecordDateToFirstDayOfWeek: Partial<Record<number, number>> = {};
   const firstDayOfWeekToHistoryRecord: Partial<Record<number, IHistoryRecord>> = {};
@@ -1138,10 +1142,14 @@ function buildHomeWeekData(history: IHistoryRecord[], startWeekFromMonday: boole
       historyRecordDateToFirstDayOfWeek[record.id] = firstDayOfWeek;
     }
   }
-  if (firstDayOfWeeksSet.size === 0) {
-    const today = new Date();
-    const firstDayOfWeek = DateUtils_firstDayOfWeekTimestamp(today.getTime(), startWeekFromMonday);
-    firstDayOfWeeksSet.add(firstDayOfWeek);
+  // personal-fork: every week from the first record to now, so weeks without records (incl. this one) are reachable
+  const recordWeeks = Array.from(firstDayOfWeeksSet);
+  const currentWeek = DateUtils_firstDayOfWeekTimestamp(now, startWeekFromMonday);
+  const lastWeek = Math.max(currentWeek, ...recordWeeks);
+  const cursor = new Date(Math.min(currentWeek, ...recordWeeks));
+  while (cursor.getTime() <= lastWeek) {
+    firstDayOfWeeksSet.add(DateUtils_firstDayOfWeekTimestamp(cursor, startWeekFromMonday));
+    cursor.setDate(cursor.getDate() + 7);
   }
   return {
     firstDayOfWeeks: CollectionUtils_sort(Array.from(firstDayOfWeeksSet)),
@@ -1161,7 +1169,7 @@ export const History_getHomeAggregates = memoize(
     const sortedHistoryDesc = CollectionUtils_sort(history, (a, b) => {
       return new Date(Date.parse(b.date)).getTime() - new Date(Date.parse(a.date)).getTime();
     });
-    const weeksData = buildHomeWeekData(sortedHistoryDesc, startWeekFromMonday);
+    const weeksData = History_buildHomeWeekData(sortedHistoryDesc, startWeekFromMonday);
     const prs = History_getPersonalRecords(history, formula);
     return { sortedHistoryDesc, weeksData, prs };
   },
