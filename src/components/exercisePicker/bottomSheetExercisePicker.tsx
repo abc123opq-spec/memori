@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import { JSX, startTransition, useCallback, useState } from "react";
 import { View } from "react-native";
 import { Text } from "../primitives/text";
 import { LinkButton } from "../linkButton";
@@ -43,6 +43,9 @@ export function ExercisePickerContent(props: IExercisePickerContentProps): JSX.E
   const { evaluatedProgram } = props;
   const state = props.exercisePicker;
   const currentScreen = state.screenStack[state.screenStack.length - 1] ?? "exercisePicker";
+  // personal-fork: search lives here, not in the app state, so a keystroke re-renders the picker only
+  const [search, setSearch] = useState("");
+  const onSearchChange = useCallback((value: string) => startTransition(() => setSearch(value)), []);
   useAndroidBack(ExercisePickerBack_canPop(state), () => {
     props.dispatch(lb<IExercisePickerState>().record(ExercisePickerBack_pop(state)), "Android back in exercise picker");
   });
@@ -56,6 +59,8 @@ export function ExercisePickerContent(props: IExercisePickerContentProps): JSX.E
         programExerciseTypes={props.programExerciseTypes}
         onChoose={props.onChoose}
         state={state}
+        search={search}
+        onSearchChange={onSearchChange}
         settings={props.settings}
         evaluatedProgram={evaluatedProgram}
         onClose={props.onClose}

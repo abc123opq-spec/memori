@@ -97,6 +97,10 @@ test("this week stays in the strip when only past weeks have records", async ({ 
   await page.getByTestId("exercise-picker-confirm").click();
   await page.getByTestId("entry-squat").getByTestId("add-workout-set").click();
   await page.getByTestId("finish-workout").click();
+  await page.getByTestId("footer-home").click();
+  await expect(page.getByTestId("history-record").filter({ hasText: "単発のワークアウト" })).toHaveCount(1);
+  // Persistence writes 100ms after the last change; reloading sooner loses the record
+  await page.waitForTimeout(500);
 
   await page.evaluate(() => window.localStorage.setItem("pw-fake-day", "26"));
   await JaUtils_open(page);

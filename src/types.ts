@@ -875,7 +875,6 @@ export interface IExercisePickerState {
   templateName?: string;
   selectedTab?: number;
   editCustomExercise?: ICustomExercise;
-  search?: string;
   exerciseType?: IExerciseType;
   entryIndex?: number;
   hideLabel?: boolean;
@@ -893,7 +892,7 @@ const _VExercisePickerState = v.object({
   templateName: v.optional(v.string()),
   selectedTab: v.optional(v.number()),
   editCustomExercise: v.optional(VCustomExercise),
-  search: v.optional(v.string()),
+  // personal-fork: search moved to picker-local state, so saved progress from older versions drops it here
   exerciseType: v.optional(VExerciseType),
   entryIndex: v.optional(v.number()),
   hideLabel: v.optional(v.boolean()),

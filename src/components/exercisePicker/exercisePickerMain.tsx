@@ -5,7 +5,8 @@ import { JSX, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState 
 import { useRemScale } from "../../utils/useRem";
 import { FitText_fontSize } from "../../utils/fitText";
 import { View, Pressable, Platform } from "react-native";
-import { TextInput } from "../primitives/textInput";
+import { ITextInput, TextInput } from "../primitives/textInput";
+import { ISearchInputCommitEvent, SearchInputCommit_initial, SearchInputCommit_next } from "./searchInputCommit";
 import Animated, {
   useSharedValue,
   useAnimatedScrollHandler,
@@ -88,6 +89,8 @@ interface IProps {
   usedExerciseTypes: IExerciseType[];
   programExerciseTypes?: IExerciseType[];
   state: IExercisePickerState;
+  search: string;
+  onSearchChange: (search: string) => void;
   evaluatedProgram?: IEvaluatedProgram;
   onClose: () => void;
 }
@@ -125,11 +128,20 @@ interface ITabDef {
 
 export function ExercisePickerMain(props: IProps): JSX.Element {
   const remScale = useRemScale();
-  const { evaluatedProgram, state, dispatch, settings, onStar, onChoose, usedExerciseTypes, programExerciseTypes } =
-    props;
+  const {
+    evaluatedProgram,
+    state,
+    dispatch,
+    settings,
+    onStar,
+    onChoose,
+    usedExerciseTypes,
+    programExerciseTypes,
+    search,
+    onSearchChange,
+  } = props;
   const {
     mode,
-    search,
     filters,
     sort,
     showMuscles,
@@ -736,7 +748,14 @@ export function ExercisePickerMain(props: IProps): JSX.Element {
                   </Text>
                 </Animated.View>
               )}
-              <SearchAndFilter dispatch={dispatch} search={search} sort={sort} filters={filters} settings={settings} />
+              <SearchAndFilter
+                dispatch={dispatch}
+                search={search}
+                onSearchChange={onSearchChange}
+                sort={sort}
+                filters={filters}
+                settings={settings}
+              />
             </Animated.View>
           );
         case "stickyChrome":
@@ -768,6 +787,7 @@ export function ExercisePickerMain(props: IProps): JSX.Element {
                 <SearchAndFilter
                   dispatch={dispatch}
                   search={search}
+                  onSearchChange={onSearchChange}
                   sort={sort}
                   filters={filters}
                   settings={settings}
@@ -776,7 +796,7 @@ export function ExercisePickerMain(props: IProps): JSX.Element {
               {item.sub === "program" && (
                 <>
                   <View className="flex-row items-center mx-4 my-1">
-                    <SearchInput dispatch={dispatch} search={search} />
+                    <SearchInput search={search} onSearchChange={onSearchChange} />
                   </View>
                   {item.showWeeks && (
                     <WeekTabsRow weeks={weeks} currentWeekIndex={currentWeekIndex} onChange={setCurrentWeekIndex} />
@@ -922,6 +942,7 @@ export function ExercisePickerMain(props: IProps): JSX.Element {
       currentWeekIndex,
       dispatch,
       search,
+      onSearchChange,
       sort,
       filters,
       onCreateCustom,
@@ -1095,18 +1116,23 @@ const WeekTabsRow = memo(function WeekTabsRow(props: IWeekTabsRowProps): JSX.Ele
 interface ISearchAndFilterProps {
   dispatch: ILensDispatch<IExercisePickerState>;
   settings: ISettings;
-  search?: string;
+  search: string;
+  onSearchChange: (search: string) => void;
   sort: IExercisePickerState["sort"];
   filters: IExercisePickerState["filters"];
 }
 
 const SearchInput = memo(function SearchInput(props: {
-  dispatch: ILensDispatch<IExercisePickerState>;
-  search?: string;
+  search: string;
+  onSearchChange: (search: string) => void;
 }): JSX.Element {
-  const { dispatch, search } = props;
-  const [localSearch, setLocalSearch] = useState<string>(search ?? "");
+  const { search, onSearchChange } = props;
+  const [localSearch, setLocalSearch] = useState<string>(search);
+  const inputRef = useRef<ITextInput>(null);
+  const commitRef = useRef(SearchInputCommit_initial(search));
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onSearchChangeRef = useRef(onSearchChange);
+  onSearchChangeRef.current = onSearchChange;
   useEffect(() => {
     return () => {
       if (timeoutRef.current) {
@@ -1114,30 +1140,52 @@ const SearchInput = memo(function SearchInput(props: {
       }
     };
   }, []);
-  useEffect(() => {
-    if (timeoutRef.current == null && (search ?? "") !== localSearch) {
-      setLocalSearch(search ?? "");
+
+  const apply = useCallback((event: ISearchInputCommitEvent) => {
+    const result = SearchInputCommit_next(commitRef.current, event);
+    commitRef.current = result.state;
+    const value = result.commit;
+    if (value == null) {
+      return;
     }
-  }, [search, localSearch]);
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      onSearchChangeRef.current(value);
+    }, 200);
+  }, []);
+
+  // react-native-web's TextInput does not forward composition events, so they are read from the DOM node
+  useEffect(() => {
+    const node = inputRef.current as unknown as HTMLInputElement | null;
+    if (Platform.OS !== "web" || node?.addEventListener == null) {
+      return undefined;
+    }
+    const onStart = (): void => apply({ type: "compositionStart" });
+    const onEnd = (): void => apply({ type: "compositionEnd", text: node.value });
+    node.addEventListener("compositionstart", onStart);
+    node.addEventListener("compositionend", onEnd);
+    return () => {
+      node.removeEventListener("compositionstart", onStart);
+      node.removeEventListener("compositionend", onEnd);
+    };
+  }, [apply]);
 
   const onChangeText = useCallback(
     (value: string) => {
       setLocalSearch(value);
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = setTimeout(() => {
-        dispatch(lb<IExercisePickerState>().p("search").record(value), "Update search input");
-        timeoutRef.current = null;
-      }, 200);
+      apply({ type: "change", text: value });
     },
-    [dispatch]
+    [apply]
   );
 
   return (
     <View className="flex-row items-center flex-1 gap-2 p-2 rounded-lg bg-background-neutral">
       <IconMagnifyingGlass size={18} color={Tailwind_colors().lightgray[600]} />
       <TextInput
+        ref={inputRef}
         placeholder={Translate_text("Search by name", "picker")}
         placeholderTextColor={Tailwind_semantic().text.secondarysubtle}
         className="flex-1 text-sm text-text-secondary"
@@ -1153,7 +1201,7 @@ const SearchInput = memo(function SearchInput(props: {
 });
 
 const SearchAndFilter = memo(function SearchAndFilter(props: ISearchAndFilterProps): JSX.Element {
-  const { dispatch, search, sort, filters, settings } = props;
+  const { dispatch, search, onSearchChange, sort, filters, settings } = props;
   const filterNames = useMemo(() => ExercisePickerUtils_getAllFilterNames(filters, settings), [filters, settings]);
   const isFiltered = filterNames.length > 0;
 
@@ -1174,7 +1222,7 @@ const SearchAndFilter = memo(function SearchAndFilter(props: ISearchAndFilterPro
   return (
     <View className="my-1">
       <View className="flex-row items-center gap-2 mx-4">
-        <SearchInput dispatch={dispatch} search={search} />
+        <SearchInput search={search} onSearchChange={onSearchChange} />
         <Pressable
           className={`flex-row items-center gap-1 py-1 border rounded-lg ${
             isFiltered ? "border-button-secondarystroke px-2" : "px-4 border-border-neutral"
